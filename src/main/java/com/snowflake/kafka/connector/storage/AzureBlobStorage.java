@@ -27,12 +27,12 @@ public class AzureBlobStorage implements Storage<WonderSnowflakeSinkConnectorCon
     private final BlobServiceClient blobServiceClient;
     private final BlobContainerClient blobContainerClient;
 
-    public AzureBlobStorage(WonderSnowflakeSinkConnectorConfig connectorConfig) {
+    public AzureBlobStorage(WonderSnowflakeSinkConnectorConfig connectorConfig, String url) {
         this.connectorConfig = connectorConfig;
         StorageSharedKeyCredential credential = new StorageSharedKeyCredential(connectorConfig.accountName(), connectorConfig.accountKey());
         this.blobServiceClient = new BlobServiceClientBuilder().endpoint(connectorConfig.url()).credential(credential).buildClient();
         this.blobContainerClient = blobServiceClient.getBlobContainerClient(connectorConfig.containerName());
-        logger.info("Azure Blob Storage URL: {}", connectorConfig.url() + "/" + connectorConfig.containerName());
+        logger.info("Azure Blob Storage URL: {}", url + "/" + connectorConfig.containerName());
     }
 
     @Override
