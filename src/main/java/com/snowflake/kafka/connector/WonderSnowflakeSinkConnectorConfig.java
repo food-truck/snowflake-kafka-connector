@@ -233,7 +233,15 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
                         azureCommonGroup,
                         ++orderInGroup,
                         ConfigDef.Width.MEDIUM,
-                        FORMAT_BYTEARRAY_LINE_SEPARATOR_DISPLAY);
+                        FORMAT_BYTEARRAY_LINE_SEPARATOR_DISPLAY)
+                .define(PARTITIONER_CLASS_CONFIG,
+                        ConfigDef.Type.STRING,
+                        ConfigDef.Importance.MEDIUM,
+                        PARTITIONER_CLASS_DOC,
+                        azureCommonGroup,
+                        ++orderInGroup,
+                        ConfigDef.Width.MEDIUM,
+                        PARTITIONER_CLASS_DISPLAY);
 
         return configDef;
     }
