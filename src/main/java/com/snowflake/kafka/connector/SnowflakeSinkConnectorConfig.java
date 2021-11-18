@@ -41,6 +41,8 @@ public class SnowflakeSinkConnectorConfig {
   static final String NAME = Utils.NAME;
   static final String TOPICS = "topics";
 
+  public static final String WONDER_DEFAULT_TOPIC2TABLE_ENABLE = "__wonder_default_topic2table__";
+
   // Connector config
   private static final String CONNECTOR_CONFIG = "Connector Config";
   static final String BUFFER_COUNT_RECORDS = "buffer.count.records";
