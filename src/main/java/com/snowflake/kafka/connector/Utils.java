@@ -546,6 +546,7 @@ public class Utils {
       return topic2table.get(topic);
     }
     if (topic2table.containsKey(SnowflakeSinkConnectorConfig.WONDER_DEFAULT_TOPIC2TABLE_ENABLE)) {
+      LOGGER.info("generate wonder table: {}", topic.substring(topic.lastIndexOf('.') + 1));
       return topic.substring(topic.lastIndexOf('.') + 1);
     }
     if (Utils.isValidSnowflakeObjectIdentifier(topic)) {

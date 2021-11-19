@@ -1,4 +1,4 @@
-FROM ftidatauatacr.azurecr.io/wonder-lab/connect-base
+FROM ftidatauatacr.azurecr.io/millitrans/connect-base
 
 RUN curl -LJO https://wonderetldev.blob.core.windows.net/connect-lib/bc-fips-1.0.2.1.jar
 RUN curl -LJO https://wonderetldev.blob.core.windows.net/connect-lib/bcpkix-fips-1.0.3.jar
