@@ -4,9 +4,7 @@ import com.snowflake.kafka.connector.format.avro.AvroFormat;
 import com.snowflake.kafka.connector.format.bytearray.ByteArrayFormat;
 import com.snowflake.kafka.connector.format.json.JsonFormat;
 import com.snowflake.kafka.connector.storage.AzureBlobStorage;
-import org.apache.kafka.common.config.AbstractConfig;
-import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.types.Password;
+import io.confluent.common.config.ConfigException;
 import io.confluent.connect.storage.StorageSinkConnectorConfig;
 import io.confluent.connect.storage.common.ComposableConfig;
 import io.confluent.connect.storage.common.GenericRecommender;
@@ -20,6 +18,8 @@ import io.confluent.connect.storage.partitioner.HourlyPartitioner;
 import io.confluent.connect.storage.partitioner.Partitioner;
 import io.confluent.connect.storage.partitioner.PartitionerConfig;
 import io.confluent.connect.storage.partitioner.TimeBasedPartitioner;
+import org.apache.kafka.common.config.AbstractConfig;
+import org.apache.kafka.common.config.ConfigDef;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -35,8 +35,15 @@ import java.util.Set;
 public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConfig {
     public static final String SINK_NAME = "wonder-snowflake-sink-connector";
     public static final String VERSION = "0.0.1";
-    private static final String AZURE_COMMON_GROUP = "Azure Common";
+    public static final String SNOWFLAKE_TEMPORARY_COLUMN_NAME = "raw";
 
+    public static final String OPERATION_SNAPSHOT = "r";
+    public static final String OPERATION_INSERT = "c";
+    public static final String OPERATION_UPDATE = "u";
+    public static final String OPERATION_DELETE = "d";
+    public static final String OPERATION_FIELD = "__op";
+
+    private static final String AZURE_COMMON_GROUP = "Azure Common";
     public static final String STORAGE_URL_CONFIG = "azure.url";
     private static final String STORAGE_URL_DOC = "Azure storage url";
     private static final String STORAGE_URL_DISPLAY = "Azure Storage URL";
@@ -53,6 +60,10 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
     public static final String CONTAINER_NAME_CONFIG = "azure.container.name";
     private static final String CONTAINER_NAME_DOC = "The container name. Must be between 3-63 alphanumeric and '-' characters";
     private static final String CONTAINER_NAME_DISPLAY = "Container Name";
+
+    public static final String CONTAINER_SAS_TOKEN_CONFIG = "azure.container.sas.token";
+    private static final String CONTAINER_SAS_TOKEN_DOC = "The container sas token";
+    private static final String CONTAINER_SAS_TOKEN_DISPLAY = "Container SAS Token";
 
     public static final String BLOCK_SIZE_CONFIG = "azure.block.size";
     private static final String BLOCK_SIZE_DOC = "The block size of Azure multi-block uploads.";
@@ -79,9 +90,16 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
     private static final String FORMAT_BYTEARRAY_LINE_SEPARATOR_DISPLAY = "ByteArrayFormat Line Separator";
     private static final String FORMAT_BYTEARRAY_LINE_SEPARATOR_DEFAULT = null;
 
-    private static final String PARTITIONER_CLASS_CONFIG = "partitioner.class";
-    private static final String PARTITIONER_CLASS_DOC = "The Partitioner Class";
-    private static final String PARTITIONER_CLASS_DISPLAY = "Partitioner Class";
+    // Snowflake connection and database config
+    private static final String SNOWFLAKE_LOGIN_INFO = "Snowflake Login Info";
+    static final String SNOWFLAKE_URL = Utils.SF_URL;
+    static final String SNOWFLAKE_USER = Utils.SF_USER;
+    static final String SNOWFLAKE_PRIVATE_KEY = Utils.SF_PRIVATE_KEY;
+    static final String SNOWFLAKE_DATABASE = Utils.SF_DATABASE;
+    static final String SNOWFLAKE_SCHEMA = Utils.SF_SCHEMA;
+    static final String SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = Utils.PRIVATE_KEY_PASSPHRASE;
+
+    private static final ConfigDef.Validator nonEmptyStringValidator = new ConfigDef.NonEmptyString();
 
     private final StorageCommonConfig commonConfig;
     private final PartitionerConfig partitionerConfig;
@@ -189,6 +207,14 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
                         ++orderInGroup,
                         ConfigDef.Width.LONG,
                         CONTAINER_NAME_DISPLAY)
+                .define(CONTAINER_SAS_TOKEN_CONFIG,
+                        ConfigDef.Type.STRING,
+                        ConfigDef.Importance.HIGH,
+                        CONTAINER_SAS_TOKEN_DOC,
+                        azureCommonGroup,
+                        ++orderInGroup,
+                        ConfigDef.Width.LONG,
+                        CONTAINER_SAS_TOKEN_DISPLAY)
                 .define(BLOCK_SIZE_CONFIG,
                         ConfigDef.Type.INT,
                         BLOCK_SIZE_DEFAULT,
@@ -234,16 +260,81 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
                         ++orderInGroup,
                         ConfigDef.Width.MEDIUM,
                         FORMAT_BYTEARRAY_LINE_SEPARATOR_DISPLAY)
-                .define(PARTITIONER_CLASS_CONFIG,
+                .define(
+                        SNOWFLAKE_URL,
                         ConfigDef.Type.STRING,
-                        ConfigDef.Importance.MEDIUM,
-                        PARTITIONER_CLASS_DOC,
-                        azureCommonGroup,
-                        ++orderInGroup,
-                        ConfigDef.Width.MEDIUM,
-                        PARTITIONER_CLASS_DISPLAY);
+                        null,
+                        nonEmptyStringValidator,
+                        ConfigDef.Importance.HIGH,
+                        "Snowflake account url",
+                        SNOWFLAKE_LOGIN_INFO,
+                        0,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_URL)
+                .define(
+                        SNOWFLAKE_USER,
+                        ConfigDef.Type.STRING,
+                        null,
+                        nonEmptyStringValidator,
+                        ConfigDef.Importance.HIGH,
+                        "Snowflake user name",
+                        SNOWFLAKE_LOGIN_INFO,
+                        1,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_USER)
+                .define(
+                        SNOWFLAKE_PRIVATE_KEY,
+                        ConfigDef.Type.PASSWORD,
+                        "",
+                        ConfigDef.Importance.HIGH,
+                        "Private key for Snowflake user",
+                        SNOWFLAKE_LOGIN_INFO,
+                        2,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_PRIVATE_KEY)
+                .define(
+                        SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
+                        ConfigDef.Type.PASSWORD,
+                        "",
+                        ConfigDef.Importance.LOW,
+                        "Passphrase of private key if encrypted",
+                        SNOWFLAKE_LOGIN_INFO,
+                        3,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_PRIVATE_KEY_PASSPHRASE)
+                .define(
+                        SNOWFLAKE_DATABASE,
+                        ConfigDef.Type.STRING,
+                        null,
+                        nonEmptyStringValidator,
+                        ConfigDef.Importance.HIGH,
+                        "Snowflake database name",
+                        SNOWFLAKE_LOGIN_INFO,
+                        4,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_DATABASE)
+                .define(
+                        SNOWFLAKE_SCHEMA,
+                        ConfigDef.Type.STRING,
+                        null,
+                        nonEmptyStringValidator,
+                        ConfigDef.Importance.HIGH,
+                        "Snowflake database schema name",
+                        SNOWFLAKE_LOGIN_INFO,
+                        5,
+                        ConfigDef.Width.NONE,
+                        SNOWFLAKE_SCHEMA);
 
         return configDef;
+    }
+
+    @Override
+    public Object get(String key) {
+        ComposableConfig config = propertyToConfig.get(key);
+        if (config == null) {
+            throw new ConfigException(String.format("Unknown configuration '%s'", key));
+        }
+        return config == this ? super.get(key) : config.get(key);
     }
 
     public String getByteArrayExtension() {
@@ -283,14 +374,18 @@ public class WonderSnowflakeSinkConnectorConfig extends StorageSinkConnectorConf
         return "https://" + accountName() + "." + getString(STORAGE_URL_CONFIG);
     }
 
+    public String sasToken() {
+        return getString(CONTAINER_SAS_TOKEN_CONFIG);
+    }
+
     @SuppressWarnings("unchecked")
     public Class<Format<WonderSnowflakeSinkConnectorConfig, String>> formatClass() {
-        return (Class<Format<WonderSnowflakeSinkConnectorConfig, String>>) getClass(FORMAT_CLASS_CONFIG);
+        return (Class<Format<WonderSnowflakeSinkConnectorConfig, String>>) getClass(StorageSinkConnectorConfig.FORMAT_CLASS_CONFIG);
     }
 
     @SuppressWarnings("unchecked")
     public Class<? extends Partitioner<?>> partitionerClass() {
-        return (Class<? extends Partitioner<?>>) getClass(PARTITIONER_CLASS_CONFIG);
+        return (Class<? extends Partitioner<?>>) getClass(PartitionerConfig.PARTITIONER_CLASS_CONFIG);
     }
 
     public String name() {

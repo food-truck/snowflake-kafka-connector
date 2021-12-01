@@ -1,6 +1,5 @@
 package com.snowflake.kafka.connector.storage;
 
-import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
@@ -24,15 +23,14 @@ public class AzureBlobStorage implements Storage<WonderSnowflakeSinkConnectorCon
     private final Logger logger = LoggerFactory.getLogger(AzureBlobStorage.class);
 
     private final WonderSnowflakeSinkConnectorConfig connectorConfig;
-    private final BlobServiceClient blobServiceClient;
     private final BlobContainerClient blobContainerClient;
 
     public AzureBlobStorage(WonderSnowflakeSinkConnectorConfig connectorConfig, String url) {
         this.connectorConfig = connectorConfig;
         StorageSharedKeyCredential credential = new StorageSharedKeyCredential(connectorConfig.accountName(), connectorConfig.accountKey());
-        this.blobServiceClient = new BlobServiceClientBuilder().endpoint(connectorConfig.url()).credential(credential).buildClient();
+        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder().endpoint(connectorConfig.url()).credential(credential).buildClient();
         this.blobContainerClient = blobServiceClient.getBlobContainerClient(connectorConfig.containerName());
-        logger.info("Azure Blob Storage URL: {}", url + "/" + connectorConfig.containerName());
+        logger.info("Azure Container url: {}", blobContainerClient.getBlobContainerUrl());
     }
 
     @Override
@@ -60,7 +58,9 @@ public class AzureBlobStorage implements Storage<WonderSnowflakeSinkConnectorCon
         if (StringUtils.isBlank(path)) {
             throw new IllegalArgumentException("Path can not be empty!");
         }
-        return blobContainerClient.getBlobClient(path).getBlockBlobClient().getBlobOutputStream();
+
+        logger.info("Azure Create blob: {}", path);
+        return blobContainerClient.getBlobClient(path).getBlockBlobClient().getBlobOutputStream(true);
     }
 
     @Override
@@ -85,7 +85,6 @@ public class AzureBlobStorage implements Storage<WonderSnowflakeSinkConnectorCon
 
     @Override
     public void close() {
-
     }
 
     @Override

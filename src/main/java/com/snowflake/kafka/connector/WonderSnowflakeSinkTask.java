@@ -1,5 +1,7 @@
 package com.snowflake.kafka.connector;
 
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionService;
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionServiceFactory;
 import com.snowflake.kafka.connector.storage.AzureBlobStorage;
 import io.confluent.common.utils.SystemTime;
 import io.confluent.common.utils.Time;
@@ -38,6 +40,9 @@ public class WonderSnowflakeSinkTask extends SinkTask {
     private RecordWriterProvider<WonderSnowflakeSinkConnectorConfig> writerProvider;
     private final Time time;
     private ErrantRecordReporter reporter;
+    private SnowflakeConnectionService conn;
+    private String id = "-1";
+    private String sasToken;
 
     public WonderSnowflakeSinkTask() {
         topicPartitionWriterMap = new HashMap<>();
@@ -53,7 +58,9 @@ public class WonderSnowflakeSinkTask extends SinkTask {
     public void start(Map<String, String> props) {
         long startTime = System.currentTimeMillis();
 
+        this.id = props.getOrDefault(Utils.TASK_ID, "-1");
         connectorConfig = new WonderSnowflakeSinkConnectorConfig(props);
+        sasToken = connectorConfig.sasToken();
         timeoutMs = connectorConfig.getLong(WonderSnowflakeSinkConnectorConfig.RETRY_BACKOFF_CONFIG);
         logger.info("Starting task[{}], storage[{}]", connectorConfig.name(), connectorConfig.url());
 
@@ -68,6 +75,8 @@ public class WonderSnowflakeSinkTask extends SinkTask {
             partitioner.configure(connectorConfig.plainValuesWithOriginals());
             reporter = context.errantRecordReporter();
             open(context.assignment());
+
+            conn = SnowflakeConnectionServiceFactory.builder().setProperties(props).setTaskID(this.id).build();
         } catch (InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
             throw new ConnectException("format.class reflection exception: ", e);
         }
@@ -87,6 +96,8 @@ public class WonderSnowflakeSinkTask extends SinkTask {
         return new TopicPartitionWriter(
                 topicPartition,
                 storage,
+                conn,
+                sasToken,
                 writerProvider,
                 partitioner,
                 connectorConfig,
@@ -96,15 +107,14 @@ public class WonderSnowflakeSinkTask extends SinkTask {
 
     @Override
     public void put(Collection<SinkRecord> collection) {
-        if (collection.size() == 0) {
-            return;
+        SinkRecord first = null;
+        if (collection.size() > 0) {
+            first = collection.iterator().next();
+            logger.info("Received {} records. First record[{}-{}-{}]: {}-{}.",
+                    collection.size(),
+                    first.topic(), first.kafkaPartition(), first.kafkaOffset(),
+                    first.key(), first.value());
         }
-
-        SinkRecord first = collection.iterator().next();
-        logger.info("Received {} records. First record[{}-{}-{}]: {}-{}.",
-                collection.size(),
-                first.topic(), first.kafkaPartition(), first.kafkaOffset(),
-                first.key(), first.value());
 
         for (SinkRecord record : collection) {
             TopicPartition topicPartition = new TopicPartition(record.topic(), record.kafkaPartition());

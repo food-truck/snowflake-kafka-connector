@@ -1,9 +1,15 @@
 package com.snowflake.kafka.connector;
 
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionService;
 import com.snowflake.kafka.connector.storage.AzureBlobStorage;
 import io.confluent.connect.storage.errors.PartitionException;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.data.Date;
+import org.apache.kafka.connect.data.Decimal;
+import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.data.Timestamp;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.errors.IllegalWorkerStateException;
@@ -11,17 +17,26 @@ import org.apache.kafka.connect.errors.SchemaProjectorException;
 import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTaskContext;
+import org.apache.kafka.connect.transforms.util.Requirements;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import io.confluent.common.utils.SystemTime;
 import io.confluent.common.utils.Time;
@@ -82,20 +97,30 @@ public class TopicPartitionWriter {
     private State state;
     private int recordCount;
     private final ErrantRecordReporter reporter;
+    private final SnowflakeConnectionService conn;
+    private final String tableName;
+    private final String sasToken;
+    private String currentOp;
+    private String currentCmdInsertOrMerge;
+    private String pkName;
 
     public TopicPartitionWriter(TopicPartition tp,
                                 AzureBlobStorage storage,
+                                SnowflakeConnectionService conn,
+                                String sasToken,
                                 RecordWriterProvider<WonderSnowflakeSinkConnectorConfig> writerProvider,
                                 Partitioner<?> partitioner,
                                 WonderSnowflakeSinkConnectorConfig connectorConfig,
                                 SinkTaskContext context,
                                 ErrantRecordReporter reporter) {
-        this(tp, storage, writerProvider, partitioner, connectorConfig, context, SYSTEM_TIME, reporter);
+        this(tp, storage, conn, sasToken, writerProvider, partitioner, connectorConfig, context, SYSTEM_TIME, reporter);
     }
 
     // Visible for testing
     TopicPartitionWriter(TopicPartition tp,
                          AzureBlobStorage storage,
+                         SnowflakeConnectionService conn,
+                         String sasToken,
                          RecordWriterProvider<WonderSnowflakeSinkConnectorConfig> writerProvider,
                          Partitioner<?> partitioner,
                          WonderSnowflakeSinkConnectorConfig connectorConfig,
@@ -106,6 +131,9 @@ public class TopicPartitionWriter {
         this.time = time;
         this.tp = tp;
         this.storage = storage;
+        this.conn = conn;
+        this.sasToken = sasToken;
+        this.tableName = tp.topic().substring(tp.topic().lastIndexOf('.') + 1);
         this.context = context;
         this.writerProvider = writerProvider;
         this.partitioner = partitioner;
@@ -205,6 +233,7 @@ public class TopicPartitionWriter {
                         baseRecordTimestamp = currentTimestamp;
                     }
                 }
+
                 assert record != null;
                 Schema valueSchema = record.valueSchema();
                 String encodedPartition;
@@ -219,19 +248,26 @@ public class TopicPartitionWriter {
                         throw e;
                     }
                 }
+
                 Schema currentValueSchema = currentSchemas.get(encodedPartition);
                 if (currentValueSchema == null) {
                     currentSchemas.put(encodedPartition, valueSchema);
                     currentValueSchema = valueSchema;
                 }
 
-                if (!checkRotationOrAppend(
-                        record,
-                        currentValueSchema,
-                        valueSchema,
-                        encodedPartition,
-                        now
-                )) {
+                if (currentCmdInsertOrMerge == null) {
+                    //init currentOp the first time
+                    currentOp = getOp(record);
+                    if (currentOp.equals("r")) {
+                        currentCmdInsertOrMerge = "insert";
+                    }
+                }
+
+                if (pkName == null) {
+                    pkName = getPkName(record);
+                }
+
+                if (!checkRotationOrAppend(record, currentValueSchema, valueSchema, encodedPartition, now)) {
                     break;
                 }
                 // fallthrough
@@ -252,29 +288,23 @@ public class TopicPartitionWriter {
      *
      * @returns true if rotation is being performed, false otherwise
      */
-    private boolean checkRotationOrAppend(
-            SinkRecord record,
-            Schema currentValueSchema,
-            Schema valueSchema,
-            String encodedPartition,
-            long now) {
+    private boolean checkRotationOrAppend(SinkRecord record, Schema currentValueSchema, Schema valueSchema, String encodedPartition, long now) {
         // rotateOnTime is safe to go before writeRecord, because it is acceptable
         // even for a faulty record to trigger time-based rotation if it applies
-        if (rotateOnTime(encodedPartition, currentTimestamp, now)) {
-            setNextScheduledRotation();
-            nextState();
-            return true;
-        }
+        // comment because this will generate 1 record size commit
+//        if (rotateOnTime(encodedPartition, currentTimestamp, now)) {
+//            setNextScheduledRotation();
+//            nextState();
+//            return true;
+//        }
 
-        if (compatibility.shouldChangeSchema(record, null, currentValueSchema)
-                && recordCount > 0) {
+        if (compatibility.shouldChangeSchema(record, null, currentValueSchema) && recordCount > 0) {
             // This branch is never true for the first record read by this TopicPartitionWriter
             log.trace("Incompatible change of schema detected for record '{}' with encoded partition "
                             + "'{}' and current offset: '{}'",
                     record,
                     encodedPartition,
-                    currentOffset
-            );
+                    currentOffset);
             currentSchemas.put(encodedPartition, valueSchema);
             nextState();
             return true;
@@ -289,14 +319,42 @@ public class TopicPartitionWriter {
         }
 
         if (rotateOnSize()) {
-            log.info("Starting commit and rotation for topic partition {} with start offset {}",
-                    tp,
-                    startOffsets
-            );
+            log.info("Starting commit and rotation for topic partition {} with start offset {}", tp, startOffsets);
             nextState();
             return true;
         }
 
+        if (rotateOnMode(record)) {
+            log.info("Starting commit and rotation on mode for topic partition {} with start offset {}", tp, startOffsets);
+            nextState();
+            return true;
+        }
+
+        return false;
+    }
+
+    private String getOp(SinkRecord record) {
+        Struct recordValue = Requirements.requireStruct(record.value(), "Read record to set topic routing for CREATE / UPDATE");
+        return recordValue.getString(WonderSnowflakeSinkConnectorConfig.OPERATION_FIELD);
+    }
+
+    private String getPkName(SinkRecord record) {
+        return record.keySchema().fields().get(0).name();
+    }
+
+    private boolean rotateOnMode(SinkRecord record) {
+        String op = getOp(record);
+        // r -> others or others -> r means need rotate
+        if ((currentOp.equals(WonderSnowflakeSinkConnectorConfig.OPERATION_SNAPSHOT) && !op.equals(WonderSnowflakeSinkConnectorConfig.OPERATION_SNAPSHOT))
+                || (!currentOp.equals(WonderSnowflakeSinkConnectorConfig.OPERATION_SNAPSHOT) && op.equals(WonderSnowflakeSinkConnectorConfig.OPERATION_SNAPSHOT))) {
+            if (currentOp.equals(WonderSnowflakeSinkConnectorConfig.OPERATION_SNAPSHOT)) {
+                currentCmdInsertOrMerge = "insert";
+            } else {
+                currentCmdInsertOrMerge = "merge";
+            }
+            currentOp = op;
+            return true;
+        }
         return false;
     }
 
@@ -305,11 +363,8 @@ public class TopicPartitionWriter {
             // committing files after waiting for rotateIntervalMs time but less than flush.size
             // records available
             if (recordCount > 0 && rotateOnTime(currentEncodedPartition, currentTimestamp, now)) {
-                log.info("Committing files after waiting for rotateIntervalMs time but less than flush.size "
-                        + "records available."
-                );
+                log.info("Committing files after waiting for rotateIntervalMs time but less than flush.size records available.");
                 setNextScheduledRotation();
-
                 commitFiles();
             }
 
@@ -346,8 +401,7 @@ public class TopicPartitionWriter {
     }
 
     private Long minStartOffset() {
-        Optional<Long> minStartOffset = startOffsets.values().stream()
-                .min(Comparator.comparing(Long::valueOf));
+        Optional<Long> minStartOffset = startOffsets.values().stream().min(Comparator.comparing(Long::valueOf));
         return minStartOffset.orElse(null);
     }
 
@@ -370,15 +424,10 @@ public class TopicPartitionWriter {
         // rotateIntervalMs > 0 implies timestampExtractor != null
         boolean periodicRotation = rotateIntervalMs > 0
                 && timestampExtractor != null
-                && (
-                recordTimestamp - baseRecordTimestamp >= rotateIntervalMs
-                        || !encodedPartition.equals(currentEncodedPartition)
-        );
+                && (recordTimestamp - baseRecordTimestamp >= rotateIntervalMs
+                        || !encodedPartition.equals(currentEncodedPartition));
 
-        log.trace("Checking rotation on time with recordCount '{}' and encodedPartition '{}'",
-                recordCount,
-                encodedPartition
-        );
+        log.trace("Checking rotation on time with recordCount '{}' and encodedPartition '{}'", recordCount, encodedPartition);
 
         log.trace("Should apply periodic time-based rotation (rotateIntervalMs: '{}', baseRecordTimestamp: "
                         + "'{}', timestamp: '{}', encodedPartition: '{}', currentEncodedPartition: '{}')? {}",
@@ -403,27 +452,16 @@ public class TopicPartitionWriter {
     private void setNextScheduledRotation() {
         if (rotateScheduleIntervalMs > 0) {
             long now = time.milliseconds();
-            nextScheduledRotation = DateTimeUtils.getNextTimeAdjustedByDay(
-                    now,
-                    rotateScheduleIntervalMs,
-                    timeZone
-            );
+            nextScheduledRotation = DateTimeUtils.getNextTimeAdjustedByDay(now, rotateScheduleIntervalMs, timeZone);
             if (log.isDebugEnabled()) {
-                log.debug("Update scheduled rotation timer. Next rotation for {} will be at {}",
-                        tp,
-                        new DateTime(nextScheduledRotation).withZone(timeZone)
-                );
+                log.debug("Update scheduled rotation timer. Next rotation for {} will be at {}", tp, new DateTime(nextScheduledRotation).withZone(timeZone));
             }
         }
     }
 
     private boolean rotateOnSize() {
         boolean messageSizeRotation = recordCount >= flushSize;
-        log.trace("Should apply size-based rotation (count {} >= flush size {})? {}",
-                recordCount,
-                flushSize,
-                messageSizeRotation
-        );
+        log.trace("Should apply size-based rotation (count {} >= flush size {})? {}", recordCount, flushSize, messageSizeRotation);
         return messageSizeRotation;
     }
 
@@ -439,10 +477,7 @@ public class TopicPartitionWriter {
 
     private RecordWriter newWriter(SinkRecord record, String encodedPartition) throws ConnectException {
         String commitFilename = getCommitFilename(encodedPartition);
-        log.debug("Creating new writer encodedPartition='{}' filename='{}'",
-                encodedPartition,
-                commitFilename
-        );
+        log.debug("Creating new writer encodedPartition='{}' filename='{}'", encodedPartition, commitFilename);
         RecordWriter writer = writerProvider.getRecordWriter(connectorConfig, commitFilename);
         writers.put(encodedPartition, writer);
         return writer;
@@ -463,9 +498,7 @@ public class TopicPartitionWriter {
 
     private String fileKey(String topicsPrefix, String keyPrefix, String name) {
         String suffix = keyPrefix + dirDelimiter + name;
-        return StringUtils.isNotBlank(topicsPrefix)
-                ? topicsPrefix + dirDelimiter + suffix
-                : suffix;
+        return StringUtils.isNotBlank(topicsPrefix) ? topicsPrefix + dirDelimiter + suffix : suffix;
     }
 
     private String fileKeyToCommit(String dirPrefix, long startOffset) {
@@ -486,10 +519,7 @@ public class TopicPartitionWriter {
         boolean shouldRemoveCommitFilename = false;
         try {
             if (!startOffsets.containsKey(encodedPartition)) {
-                log.trace("Setting writer's start offset for '{}' to {}",
-                        encodedPartition,
-                        currentOffsetIfSuccessful
-                );
+                log.trace("Setting writer's start offset for '{}' to {}", encodedPartition, currentOffsetIfSuccessful);
                 startOffsets.put(encodedPartition, currentOffsetIfSuccessful);
                 shouldRemoveStartOffset = true;
             }
@@ -523,10 +553,7 @@ public class TopicPartitionWriter {
         currentEncodedPartition = encodedPartition;
         currentOffset = record.kafkaOffset();
         if (shouldRemoveStartOffset) {
-            log.trace("Setting writer's start offset for '{}' to {}",
-                    currentEncodedPartition,
-                    currentOffset
-            );
+            log.trace("Setting writer's start offset for '{}' to {}", currentEncodedPartition, currentOffset);
 
             // Once we have a "start offset" for a particular "encoded partition"
             // value, we know that we have at least one record. This allows us
@@ -547,10 +574,11 @@ public class TopicPartitionWriter {
         for (Map.Entry<String, String> entry : commitFiles.entrySet()) {
             String encodedPartition = entry.getKey();
             commitFile(encodedPartition);
+            ingestToSnowflake(entry.getValue());
             startOffsets.remove(encodedPartition);
             endOffsets.remove(encodedPartition);
             recordCounts.remove(encodedPartition);
-            log.debug("Committed {} for {}", entry.getValue(), tp);
+            log.info("Committed {} for {}", entry.getValue(), tp);
         }
 
         offsetToCommit = currentOffset + 1;
@@ -573,6 +601,176 @@ public class TopicPartitionWriter {
             writer.commit();
             writers.remove(encodedPartition);
             log.debug("Removed writer for '{}'", encodedPartition);
+        }
+    }
+
+    private void ingestToSnowflake(String path) {
+        createDstTableIfNotExists(tableName);
+        String tmpTable = createTmpTable();
+        copyIntoTmp(tmpTable, path);
+        if (currentCmdInsertOrMerge.equals("insert")) {
+            insertIntoDstFromTmp(tmpTable, tableName);
+        } else {
+            mergeIntoDstFromTmp(tmpTable, tableName, pkName);
+        }
+        dropTmpTable(tmpTable);
+    }
+
+    private void createDstTableIfNotExists(String tableName) {
+        if (tableNotExistOrSchemaChange(tableName)) {
+            String query = String.format("CREATE TABLE %s (%s) IF NOT EXISTS", tableName, columnsForDefine());
+            execute(query);
+        }
+    }
+
+    private boolean tableNotExistOrSchemaChange(String tableName) {
+        String query = String.format("DESC TABLE %s", tableName);
+        PreparedStatement stmt;
+        try {
+            stmt = conn.getConnection().prepareStatement(query);
+            ResultSet resultSet = stmt.executeQuery();
+            List<String> existColumns = new ArrayList<>();
+            while (resultSet.next()) {
+                existColumns.add(resultSet.getString("name"));
+            }
+            List<String> missColumns = getMissedColumns(existColumns);
+            stmt.close();
+            if (missColumns.size() != 0) {
+                alterTableAddMissColumns(tableName, missColumns);
+            }
+            return false;
+        } catch (SQLException e) {
+            log.info(e.getMessage());
+            return true;
+        }
+    }
+
+    private void alterTableAddMissColumns(String tableName, List<String> missColumns) {
+        String query = String.format("ALTER TABLE %s ADD COLUMN %s", tableName, columnsForSetMiss(missColumns));
+        execute(query);
+    }
+
+    private List<String> getMissedColumns(List<String> existColumns) {
+        Set<String> existColumnSet = new HashSet<>(existColumns);
+        return currentFields().stream().filter(item -> !existColumnSet.contains(item.name().toUpperCase())).map(item -> item.name().toUpperCase()).collect(Collectors.toList());
+    }
+
+    private String createTmpTable() {
+        String tmpTableName =  String.format("%s_%d", tableName, currentTimestamp);
+        String query = String.format("CREATE TEMPORARY TABLE %s (%s VARIANT)", tmpTableName, WonderSnowflakeSinkConnectorConfig.SNOWFLAKE_TEMPORARY_COLUMN_NAME);
+        execute(query);
+        return tmpTableName;
+    }
+
+    private void dropTmpTable(String name) {
+        String query = String.format("DROP TABLE %s", name);
+        execute(query);
+    }
+
+    private void copyIntoTmp(String name, String path) {
+        String query = String.format("COPY INTO %s from 'azure://%s/%s' CREDENTIALS = (AZURE_SAS_TOKEN = '%s') FILE_FORMAT = (TYPE = 'json')",
+                name,
+                storage.url().substring("http://".length() + 1),
+                path,
+                sasToken);
+        execute(query);
+    }
+
+    private void insertIntoDstFromTmp(String src, String dst) {
+        String query = String.format("INSERT INTO %s (%s) SELECT %s FROM %s",
+                dst,
+                columns(),
+                columnsFromJson(),
+                src);
+        execute(query);
+    }
+
+    private void mergeIntoDstFromTmp(String src, String dst, String pk) {
+        String query = String.format("MERGE INTO %s AS DST USING (SELECT %s FROM %s) AS SRC ON SRC.%S=DST.%S WHEN MATCHED THEN UPDATE SET %s WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+                dst,
+                columnsFromJson(),
+                src,
+                pk,
+                pk,
+                columnsForSet(),
+                columns(),
+                columns());
+        execute(query);
+    }
+
+    private List<Field> currentFields() {
+        return currentSchemas.get(currentEncodedPartition).fields();
+    }
+
+    private String columns() {
+        return currentFields().stream().map(Field::name).collect(Collectors.joining(","));
+    }
+
+    private String columnsFromJson() {
+        return currentFields().stream().map(item -> String.format("raw:%s::%s as %s", item.name(), sqlTypeMapper(item.schema()), item.name())).collect(Collectors.joining(","));
+    }
+
+    private String columnsForSet() {
+        return currentFields().stream().map(item -> String.format("DST.%s=src.%s", item.name(), item.name())).collect(Collectors.joining(","));
+    }
+
+    private String columnsForDefine() {
+        return currentFields().stream().map(item -> String.format("%s %s", item.name(), sqlTypeMapper(item.schema()))).collect(Collectors.joining(","));
+    }
+
+    private Object columnsForSetMiss(List<String> missColumns) {
+        return currentFields().stream().filter(item -> missColumns.contains(item.name().toUpperCase())).map(item -> String.format("%s %s", item.name(), sqlTypeMapper(item.schema()))).collect(Collectors.joining(","));
+    }
+
+    private void execute(String query) {
+        log.info(query);
+        try {
+            PreparedStatement stmt = conn.getConnection().prepareStatement(query);
+            stmt.execute();
+            stmt.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e.getMessage());
+        }
+    }
+
+    private String sqlTypeMapper(Schema field) {
+        if (field.name() != null) {
+            switch (field.name()) {
+                case Decimal.LOGICAL_NAME:
+                    return "DECIMAL";
+                case Date.LOGICAL_NAME:
+                    return "DATE";
+                case org.apache.kafka.connect.data.Time.LOGICAL_NAME:
+                    return "TIME";
+                case "io.debezium.time.ZonedTimestamp":
+                case Timestamp.LOGICAL_NAME:
+                    return "TIMESTAMP_NTZ";
+                default:
+                    // pass through to primitive types
+            }
+        }
+        switch (field.type()) {
+            case INT8:
+                return "TINYINT";
+            case INT16:
+                return "SMALLINT";
+            case INT32:
+                return "INTEGER";
+            case INT64:
+                return "BIGINT";
+            case FLOAT32:
+                return "REAL";
+            case FLOAT64:
+                return "DOUBLE PRECISION";
+            case BOOLEAN:
+                return "BOOLEAN";
+            case STRING:
+                return "TEXT";
+            case BYTES:
+                return "BINARY";
+            default:
+                return "VARIANT";
         }
     }
 }
