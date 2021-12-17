@@ -618,7 +618,7 @@ public class TopicPartitionWriter {
 
     private void createDstTableIfNotExists(String tableName) {
         if (tableNotExistOrSchemaChange(tableName)) {
-            String query = String.format("CREATE TABLE %s (%s) IF NOT EXISTS", tableName, columnsForDefine());
+            String query = String.format("CREATE TABLE %s (%s) IF NOT EXISTS", tableName, columnsForDefine() + ",__SF_TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP()");
             execute(query);
         }
     }
