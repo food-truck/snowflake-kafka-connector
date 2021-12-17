@@ -260,6 +260,8 @@ public class TopicPartitionWriter {
                     currentOp = getOp(record);
                     if (currentOp.equals("r")) {
                         currentCmdInsertOrMerge = "insert";
+                    } else {
+                        currentCmdInsertOrMerge = "merge";
                     }
                 }
 
@@ -339,6 +341,7 @@ public class TopicPartitionWriter {
     }
 
     private String getPkName(SinkRecord record) {
+        //TODO: database chefs tables: employees_temp, approved_paid_time_off do not have primary key
         return record.keySchema().fields().get(0).name();
     }
 
