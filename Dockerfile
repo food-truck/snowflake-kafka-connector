@@ -8,8 +8,6 @@ RUN sed -i 's/^plugin.path=/plugin.path=\/usr\/share\/wonder,/' /etc/kafka/conne
     && sed -i 's/^plugin.path=/plugin.path=\/usr\/share\/wonder,/' /etc/schema-registry/connect-avro-standalone.properties
 
 RUN mkdir "/usr/share/wonder"
-RUN curl -SL https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/1.8.0.Final/debezium-connector-mysql-1.8.0.Final-plugin.tar.gz | tar -xzC /usr/share/wonder
-RUN curl -SL https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/1.8.0.Final/debezium-connector-mongodb-1.8.0.Final-plugin.tar.gz | tar -xzC /usr/share/wonder
 
 #RUN curl -LJO https://wonderetldev.blob.core.windows.net/connect-lib/bc-fips-1.0.2.1.jar
 #RUN curl -LJO https://wonderetldev.blob.core.windows.net/connect-lib/bcpkix-fips-1.0.3.jar
