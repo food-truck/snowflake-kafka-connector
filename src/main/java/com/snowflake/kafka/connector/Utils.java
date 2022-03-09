@@ -513,7 +513,10 @@ public class Utils {
     }
     if (topic2table.containsKey(SnowflakeSinkConnectorConfig.WONDER_DEFAULT_TOPIC2TABLE_ENABLE)) {
       LOGGER.info("generate wonder table: {}", topic.substring(topic.lastIndexOf('.') + 1));
-      return topic.substring(topic.lastIndexOf('.') + 1).replaceAll("-", PLACE_HOLDER);
+      String name = topic.substring(topic.lastIndexOf('.') + 1).replaceAll("-", PLACE_HOLDER);
+      if (Utils.isValidSnowflakeObjectIdentifier(name)) {
+        return name;
+      }
     }
     if (Utils.isValidSnowflakeObjectIdentifier(topic)) {
       return topic;
