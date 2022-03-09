@@ -18,11 +18,16 @@ package com.snowflake.kafka.connector;
 
 import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.BEHAVIOR_ON_NULL_VALUES_CONFIG;
 import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.BehaviorOnNullValues.VALIDATOR;
+import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.DELIVERY_GUARANTEE;
+import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.INGESTION_METHOD_OPT;
 import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.JMX_OPT;
 
+import com.snowflake.kafka.connector.internal.BufferThreshold;
 import com.snowflake.kafka.connector.internal.Logging;
 import com.snowflake.kafka.connector.internal.SnowflakeErrors;
 import com.snowflake.kafka.connector.internal.SnowflakeKafkaConnectorException;
+import com.snowflake.kafka.connector.internal.streaming.IngestionMethodConfig;
+import com.snowflake.kafka.connector.internal.streaming.StreamingUtils;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
@@ -46,7 +51,7 @@ import org.slf4j.LoggerFactory;
 public class Utils {
 
   // Connector version, change every release
-  public static final String VERSION = "1.6.0";
+  public static final String VERSION = "1.7.1";
 
   // connector parameter list
   public static final String NAME = "name";
@@ -58,6 +63,12 @@ public class Utils {
   public static final String SF_SSL = "sfssl"; // for test only
   public static final String SF_WAREHOUSE = "sfwarehouse"; // for test only
   public static final String PRIVATE_KEY_PASSPHRASE = "snowflake.private.key" + ".passphrase";
+
+  /**
+   * This value should be present if ingestion method is {@link
+   * IngestionMethodConfig#SNOWPIPE_STREAMING}
+   */
+  public static final String SF_ROLE = "snowflake.role.name";
 
   // constants strings
   private static final String KAFKA_OBJECT_PREFIX = "SNOWFLAKE_KAFKA_CONNECTOR";
@@ -86,6 +97,9 @@ public class Utils {
   // mvn repo
   private static final String MVN_REPO =
       "https://repo1.maven.org/maven2/com/snowflake/snowflake-kafka-connector/";
+
+  public static final String TABLE_COLUMN_CONTENT = "RECORD_CONTENT";
+  public static final String TABLE_COLUMN_METADATA = "RECORD_METADATA";
 
   private static final Logger LOGGER = LoggerFactory.getLogger(Utils.class.getName());
 
@@ -340,79 +354,16 @@ public class Utils {
       configIsValid = false;
     }
 
-    // verify buffer.flush.time
-    if (!config.containsKey(SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC)) {
-      LOGGER.error(
-          Logging.logMessage("{} is empty", SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC));
-      configIsValid = false;
-    } else {
-      try {
-        long time = Long.parseLong(config.get(SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC));
-        if (time < SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC_MIN) {
-          LOGGER.error(
-              (Logging.logMessage(
-                  "{} is {}, it should be greater " + "than {}",
-                  SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC,
-                  time,
-                  SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC_MIN)));
-          configIsValid = false;
-        }
-      } catch (Exception e) {
-        LOGGER.error(
-            Logging.logMessage(
-                "{} should be an integer", SnowflakeSinkConnectorConfig.BUFFER_FLUSH_TIME_SEC));
+    // If config doesnt have ingestion method defined, default is snowpipe or if snowpipe is
+    // explicitly passed in as ingestion method
+    // Below checks are just for snowpipe.
+    if (!config.containsKey(INGESTION_METHOD_OPT)
+        || config
+            .get(INGESTION_METHOD_OPT)
+            .equalsIgnoreCase(IngestionMethodConfig.SNOWPIPE.toString())) {
+      if (!BufferThreshold.validateBufferThreshold(config, IngestionMethodConfig.SNOWPIPE)) {
         configIsValid = false;
       }
-    }
-
-    // verify buffer.count.records
-    if (!config.containsKey(SnowflakeSinkConnectorConfig.BUFFER_COUNT_RECORDS)) {
-      LOGGER.error(
-          Logging.logMessage("{} is empty", SnowflakeSinkConnectorConfig.BUFFER_COUNT_RECORDS));
-      configIsValid = false;
-    } else {
-      try {
-        long num = Long.parseLong(config.get(SnowflakeSinkConnectorConfig.BUFFER_COUNT_RECORDS));
-        if (num < 0) {
-          LOGGER.error(
-              Logging.logMessage(
-                  "{} is {}, it should not be negative",
-                  SnowflakeSinkConnectorConfig.BUFFER_COUNT_RECORDS,
-                  num));
-          configIsValid = false;
-        }
-      } catch (Exception e) {
-        LOGGER.error(
-            Logging.logMessage(
-                "{} should be an integer", SnowflakeSinkConnectorConfig.BUFFER_COUNT_RECORDS));
-        configIsValid = false;
-      }
-    }
-
-    // verify buffer.size.bytes
-    if (config.containsKey(SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES)) {
-      try {
-        long bsb = Long.parseLong(config.get(SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES));
-        if (bsb < SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES_MIN) // 1 byte
-        {
-          LOGGER.error(
-              Logging.logMessage(
-                  "{} is too low at {}. It must be " + "{} or greater.",
-                  SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES,
-                  bsb,
-                  SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES_MIN));
-          configIsValid = false;
-        }
-      } catch (Exception e) {
-        LOGGER.error(
-            Logging.logMessage(
-                "{} should be an integer", SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES));
-        configIsValid = false;
-      }
-    } else {
-      LOGGER.error(
-          Logging.logMessage("{} is empty", SnowflakeSinkConnectorConfig.BUFFER_SIZE_BYTES));
-      configIsValid = false;
     }
 
     if (config.containsKey(SnowflakeSinkConnectorConfig.TOPICS_TABLES_MAP)
@@ -499,7 +450,22 @@ public class Utils {
       }
     }
 
-    if (!configIsValid) {
+    try {
+      SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.of(
+          config.getOrDefault(
+              DELIVERY_GUARANTEE,
+              SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.AT_LEAST_ONCE.name()));
+    } catch (IllegalArgumentException exception) {
+      LOGGER.error(
+          Logging.logMessage(
+              "Delivery Guarantee config:{} error:{}", DELIVERY_GUARANTEE, exception.getMessage()));
+      configIsValid = false;
+    }
+
+    // Check all config values for ingestion method == IngestionMethodConfig.SNOWPIPE_STREAMING
+    final boolean isStreamingConfigValid = StreamingUtils.isStreamingSnowpipeConfigValid(config);
+
+    if (!configIsValid || !isStreamingConfigValid) {
       throw SnowflakeErrors.ERROR_0001.getException();
     }
 

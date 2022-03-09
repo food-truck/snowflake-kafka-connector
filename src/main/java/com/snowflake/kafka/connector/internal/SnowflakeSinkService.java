@@ -3,24 +3,24 @@ package com.snowflake.kafka.connector.internal;
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.annotations.VisibleForTesting;
 import com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig;
+import com.snowflake.kafka.connector.dlq.KafkaRecordErrorReporter;
 import com.snowflake.kafka.connector.records.SnowflakeMetadataConfig;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.sink.SinkRecord;
+import org.apache.kafka.connect.sink.SinkTaskContext;
 
 /** Background service of data sink, responsible to create/drop pipe and ingest/purge files */
 public interface SnowflakeSinkService {
   /**
-   * Create new ingestion task from existing table and stage, try to reused existing pipe and
-   * recovery previous task, otherwise, create a new pipe.
+   * Start the Task. This should handle any configuration parsing and one-time setup of the task.
    *
    * @param tableName destination table name
-   * @param topic topic name
-   * @param partition partition index
+   * @param topicPartition TopicPartition passed from Kafka
    */
-  void startTask(String tableName, String topic, int partition);
+  void startTask(String tableName, TopicPartition topicPartition);
 
   /**
    * call pipe to insert a collections of JSON records will trigger time based flush
@@ -85,6 +85,11 @@ public interface SnowflakeSinkService {
    * change data size of buffer to control the flush rate, the minimum file size is controlled by
    * {@link com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig#BUFFER_SIZE_BYTES_MIN}
    *
+   * <p>Please note: The buffer size for Streaming and snowpipe doesnt necessarily translate to same
+   * file size in Snowflake.
+   *
+   * <p>There is Java to UTF conversion followed by file compression in gzip.
+   *
    * @param size a non negative long number represents data size limitation
    */
   void setFileSize(long size);
@@ -128,6 +133,20 @@ public interface SnowflakeSinkService {
 
   /* Only used in testing and verifying what was the passed value of this behavior from config to sink service*/
   SnowflakeSinkConnectorConfig.BehaviorOnNullValues getBehaviorOnNullValuesConfig();
+
+  /**
+   * set the delivery guarantee, giving user the option to enable exactly once semantic
+   *
+   * @param ingestionDeliveryGuarantee ingestion guarantee given inside Config
+   */
+  void setDeliveryGuarantee(
+      SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee ingestionDeliveryGuarantee);
+
+  /* Set Error reporter which can be used to send records to DLQ (Dead Letter Queue) */
+  default void setErrorReporter(KafkaRecordErrorReporter kafkaRecordErrorReporter) {}
+
+  /* Set the SinkTaskContext object available from SinkTask. It contains utility methods to from Kafka Connect Runtime. */
+  default void setSinkTaskContext(SinkTaskContext sinkTaskContext) {}
 
   /* Get metric registry of an associated pipe */
   @VisibleForTesting

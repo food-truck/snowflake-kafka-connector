@@ -16,17 +16,30 @@
  */
 package com.snowflake.kafka.connector;
 
-import com.snowflake.kafka.connector.internal.*;
+import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.DELIVERY_GUARANTEE;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.snowflake.kafka.connector.dlq.KafkaRecordErrorReporter;
+import com.snowflake.kafka.connector.internal.Logging;
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionService;
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionServiceFactory;
+import com.snowflake.kafka.connector.internal.SnowflakeErrors;
+import com.snowflake.kafka.connector.internal.SnowflakeSinkService;
+import com.snowflake.kafka.connector.internal.SnowflakeSinkServiceFactory;
+import com.snowflake.kafka.connector.internal.streaming.IngestionMethodConfig;
 import com.snowflake.kafka.connector.records.SnowflakeMetadataConfig;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
+import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
@@ -52,6 +65,19 @@ public class SnowflakeSinkTask extends SinkTask {
   // account and execute queries
   private SnowflakeConnectionService conn = null;
   private String id = "-1";
+
+  // Rebalancing Test
+  private boolean enableRebalancing = SnowflakeSinkConnectorConfig.REBALANCING_DEFAULT;
+  // After REBALANCING_THRESHOLD put operations, insert a thread.sleep which will trigger rebalance
+  private int rebalancingCounter = 0;
+
+  // After 5 put operations, we will insert a sleep which will cause a rebalance since heartbeat is
+  // not found
+  private final int REBALANCING_THRESHOLD = 10;
+
+  // This value should be more than max.poll.interval.ms
+  // check connect-distributed.properties file used to start kafka connect
+  private final int rebalancingSleepTime = 370000;
 
   private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeSinkTask.class);
 
@@ -139,6 +165,32 @@ public class SnowflakeSinkTask extends SinkTask {
           Boolean.parseBoolean(parsedConfig.get(SnowflakeSinkConnectorConfig.JMX_OPT));
     }
 
+    // Get the Delivery guarantee type from config, default to at_least_once
+    SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee ingestionDeliveryGuarantee =
+        SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.of(
+            parsedConfig.getOrDefault(
+                DELIVERY_GUARANTEE,
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.AT_LEAST_ONCE.name()));
+
+    enableRebalancing =
+        Boolean.parseBoolean(parsedConfig.get(SnowflakeSinkConnectorConfig.REBALANCING));
+
+    KafkaRecordErrorReporter kafkaRecordErrorReporter = noOpKafkaRecordErrorReporter();
+
+    // default to snowpipe
+    // If it is snowpipe_streaming, set delivery guarantee to exactly once.
+    IngestionMethodConfig ingestionType = IngestionMethodConfig.SNOWPIPE;
+    if (parsedConfig.containsKey(SnowflakeSinkConnectorConfig.INGESTION_METHOD_OPT)) {
+      ingestionType =
+          IngestionMethodConfig.valueOf(
+              parsedConfig.get(SnowflakeSinkConnectorConfig.INGESTION_METHOD_OPT).toUpperCase());
+      if (ingestionType.equals(IngestionMethodConfig.SNOWPIPE_STREAMING)) {
+        ingestionDeliveryGuarantee =
+            SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE;
+        kafkaRecordErrorReporter = createKafkaRecordErrorReporter();
+      }
+    }
+
     conn =
         SnowflakeConnectionServiceFactory.builder()
             .setProperties(parsedConfig)
@@ -149,7 +201,7 @@ public class SnowflakeSinkTask extends SinkTask {
       this.sink.closeAll();
     }
     this.sink =
-        SnowflakeSinkServiceFactory.builder(getConnection())
+        SnowflakeSinkServiceFactory.builder(getConnection(), ingestionType, parsedConfig)
             .setFileSize(bufferSizeBytes)
             .setRecordNumber(bufferCountRecords)
             .setFlushTime(bufferFlushTime)
@@ -157,6 +209,9 @@ public class SnowflakeSinkTask extends SinkTask {
             .setMetadataConfig(metadataConfig)
             .setBehaviorOnNullValuesConfig(behavior)
             .setCustomJMXMetrics(enableCustomJMXMonitoring)
+            .setDeliveryGuarantee(ingestionDeliveryGuarantee)
+            .setErrorReporter(kafkaRecordErrorReporter)
+            .setSinkTaskContext(this.context)
             .build();
 
     LOGGER.info(
@@ -192,9 +247,7 @@ public class SnowflakeSinkTask extends SinkTask {
             this.id,
             partitions.size()));
     partitions.forEach(
-        tp ->
-            this.sink.startTask(
-                Utils.tableName(tp.topic(), this.topic2table), tp.topic(), tp.partition()));
+        tp -> this.sink.startTask(Utils.tableName(tp.topic(), this.topic2table), tp));
 
     LOGGER.info(
         Logging.logMessage(
@@ -233,6 +286,10 @@ public class SnowflakeSinkTask extends SinkTask {
    */
   @Override
   public void put(final Collection<SinkRecord> records) {
+    if (enableRebalancing && records.size() > 0) {
+      processRebalancingTest();
+    }
+
     long startTime = System.currentTimeMillis();
     LOGGER.debug(
         Logging.logMessage("SnowflakeSinkTask[ID:{}]:put {} records", this.id, records.size()));
@@ -352,5 +409,60 @@ public class SnowflakeSinkTask extends SinkTask {
               size,
               executionTime));
     }
+  }
+
+  /** When rebalancing test is enabled, trigger sleep after rebalacing threshold is reached */
+  void processRebalancingTest() {
+    rebalancingCounter++;
+    if (rebalancingCounter == REBALANCING_THRESHOLD) {
+      try {
+        LOGGER.debug("[TEST_ONLY] Sleeping :{} ms to trigger a rebalance", rebalancingSleepTime);
+        Thread.sleep(rebalancingSleepTime);
+      } catch (InterruptedException e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  /* Used to report a record back to DLQ if error tolerance is specified */
+  private KafkaRecordErrorReporter createKafkaRecordErrorReporter() {
+    KafkaRecordErrorReporter result = noOpKafkaRecordErrorReporter();
+    if (context != null) {
+      try {
+        ErrantRecordReporter errantRecordReporter = context.errantRecordReporter();
+        if (errantRecordReporter != null) {
+          result =
+              (record, error) -> {
+                try {
+                  // Blocking this until record is delivered to DLQ
+                  errantRecordReporter.report(record, error).get();
+                } catch (InterruptedException | ExecutionException e) {
+                  final String errMsg = "ERROR reporting records to ErrantRecordReporter";
+                  LOGGER.error(errMsg, e);
+                  throw new ConnectException(errMsg, e);
+                }
+              };
+        } else {
+          LOGGER.info("Errant record reporter is not configured.");
+        }
+      } catch (NoClassDefFoundError | NoSuchMethodError e) {
+        // Will occur in Connect runtimes earlier than 2.6
+        LOGGER.info("Kafka versions prior to 2.6 do not support the errant record reporter.");
+      }
+    }
+    return result;
+  }
+
+  /**
+   * For versions older than 2.6
+   *
+   * @see <a
+   *     href="https://javadoc.io/doc/org.apache.kafka/connect-api/2.6.0/org/apache/kafka/connect/sink/ErrantRecordReporter.html">
+   *     link </a>
+   * @return
+   */
+  @VisibleForTesting
+  static KafkaRecordErrorReporter noOpKafkaRecordErrorReporter() {
+    return (record, e) -> {};
   }
 }

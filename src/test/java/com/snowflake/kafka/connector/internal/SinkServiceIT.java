@@ -17,6 +17,7 @@ import java.sql.ResultSet;
 import java.util.*;
 import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.ObjectMapper;
 import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.node.ObjectNode;
+import net.snowflake.ingest.connection.ClientStatusResponse;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaAndValue;
@@ -127,7 +128,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     SnowflakeConverter converter = new SnowflakeJsonConverter();
@@ -180,7 +181,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     // Verifying it here to see if it fallbacks to default behavior - which is to ingest empty json
@@ -247,7 +248,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .setBehaviorOnNullValuesConfig(SnowflakeSinkConnectorConfig.BehaviorOnNullValues.IGNORE)
             .build();
 
@@ -296,7 +297,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .setBehaviorOnNullValuesConfig(SnowflakeSinkConnectorConfig.BehaviorOnNullValues.IGNORE)
             .build();
 
@@ -420,7 +421,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(recordCount)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     service.insert(noSchemaRecordValue);
@@ -608,7 +609,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(recordCount)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     service.insert(avroRecordValue);
@@ -691,7 +692,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(recordCount)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     service.insert(brokenValue);
@@ -731,7 +732,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(recordCount)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     service.insert(brokenValue);
@@ -783,7 +784,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(recordCount)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     service.insert(brokenValue);
@@ -801,8 +802,8 @@ public class SinkServiceIT {
         SnowflakeSinkServiceFactory.builder(conn)
             .setRecordNumber(numLimit)
             .setFlushTime(30)
-            .addTask(table, topic, partition)
-            .addTask(table, topic, partition1)
+            .addTask(table, new TopicPartition(topic, partition))
+            .addTask(table, new TopicPartition(topic, partition1))
             .build();
 
     insert(service, partition, numOfRecord);
@@ -848,7 +849,7 @@ public class SinkServiceIT {
         SnowflakeSinkServiceFactory.builder(conn)
             .setFileSize(size)
             .setFlushTime(10)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     insert(service, partition, numOfRecord);
@@ -879,7 +880,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setFlushTime(flushTime)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     insert(service, partition, numOfRecord);
@@ -913,7 +914,7 @@ public class SinkServiceIT {
     SchemaAndValue input =
         converter.toConnectData(topic, "{\"name\":\"test\"}".getBytes(StandardCharsets.UTF_8));
     service.insert(new SinkRecord(topic, partition, null, null, input.schema(), input.value(), 0));
-    service.startTask(table, topic, partition);
+    service.startTask(table, new TopicPartition(topic, partition));
   }
 
   @Test
@@ -951,7 +952,7 @@ public class SinkServiceIT {
 
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .setRecordNumber(1) // immediate flush
             .build();
 
@@ -999,7 +1000,9 @@ public class SinkServiceIT {
             offset);
 
     SnowflakeSinkService service =
-        SnowflakeSinkServiceFactory.builder(conn).addTask(table, topic, partition).build();
+        SnowflakeSinkServiceFactory.builder(conn)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
 
     service.insert(record);
 
@@ -1032,7 +1035,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(spyConn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     SnowflakeConverter converter = new SnowflakeJsonConverter();
@@ -1099,7 +1102,7 @@ public class SinkServiceIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(spyConn)
             .setRecordNumber(1)
-            .addTask(table, topic, partition)
+            .addTask(table, new TopicPartition(topic, partition))
             .build();
 
     SnowflakeConverter converter = new SnowflakeJsonConverter();
@@ -1146,5 +1149,240 @@ public class SinkServiceIT {
                 == 0,
         60,
         8);
+  }
+
+  @Test
+  public void testIngestionWithExactlyOnceSemanticsHappyCase() throws Exception {
+    conn.createTable(table);
+    conn.createStage(stage);
+    SnowflakeSinkService service =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+
+    SnowflakeConverter converter = new SnowflakeJsonConverter();
+    SchemaAndValue input =
+        converter.toConnectData(topic, "{\"name\":\"test\"}".getBytes(StandardCharsets.UTF_8));
+
+    SnowflakeIngestionService ingestionService = conn.buildIngestService(stage, pipe);
+
+    long offset = 0;
+    // Create sink record
+    SinkRecord record1 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+
+    service.insert(record1);
+    // Confirm the record is flushed to stage
+    TestUtils.assertWithRetry(
+        () ->
+            conn.listStage(
+                        stage,
+                        FileNameUtils.filePrefix(TestUtils.TEST_CONNECTOR_NAME, table, partition))
+                    .size()
+                == 1,
+        5,
+        4);
+    // call snowpipe ingest api
+    service.callAllGetOffset();
+    // wait for ingest
+    TestUtils.assertWithRetry(() -> TestUtils.tableSize(table) == 1, 30, 20);
+    // change cleaner
+    TestUtils.assertWithRetry(() -> getStageSize(stage, table, partition) == 0, 30, 20);
+    assert service.getOffset(new TopicPartition(topic, partition)) == offset + 1;
+
+    // Make sure correct client sequencer and offset token
+    ClientStatusResponse clientStatusResponse = ingestionService.getClientStatus();
+    assert clientStatusResponse.getClientSequencer() == 0;
+    assert clientStatusResponse.getOffsetToken() != null;
+    assert Long.parseLong(clientStatusResponse.getOffsetToken()) == offset;
+    service.closeAll();
+
+    // initialize a new sink service
+    SnowflakeSinkService service2 =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+    offset = 1;
+    // Create sink record
+    SinkRecord record2 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+
+    service2.insert(record2);
+    // Confirm the record is flushed to stage
+    TestUtils.assertWithRetry(
+        () ->
+            conn.listStage(
+                        stage,
+                        FileNameUtils.filePrefix(TestUtils.TEST_CONNECTOR_NAME, table, partition))
+                    .size()
+                == 1,
+        5,
+        4);
+    // call snowpipe ingest api
+    service2.callAllGetOffset();
+    // wait for ingest
+    TestUtils.assertWithRetry(() -> TestUtils.tableSize(table) == 2, 30, 20);
+    // change cleaner
+    TestUtils.assertWithRetry(() -> getStageSize(stage, table, partition) == 0, 30, 20);
+    assert service2.getOffset(new TopicPartition(topic, partition)) == offset + 1;
+
+    // Make sure correct client sequencer and offset token
+    clientStatusResponse = ingestionService.getClientStatus();
+    assert clientStatusResponse.getClientSequencer() == 1;
+    assert clientStatusResponse.getOffsetToken() != null;
+    assert Long.parseLong(clientStatusResponse.getOffsetToken()) == offset;
+    service2.closeAll();
+  }
+
+  @Test
+  // Start buffering if offsets from kafka > server side offset else discard
+  public void testRecordDiscardWithExactlyOnceSemantics() throws Exception {
+    conn.createTable(table);
+    conn.createStage(stage);
+    SnowflakeSinkService service =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+
+    SnowflakeConverter converter = new SnowflakeJsonConverter();
+    SchemaAndValue input =
+        converter.toConnectData(topic, "{\"name\":\"test\"}".getBytes(StandardCharsets.UTF_8));
+
+    SnowflakeIngestionService ingestionService = conn.buildIngestService(stage, pipe);
+
+    long offset = 0;
+    // Create sink record
+    SinkRecord record1 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+
+    service.insert(record1);
+    // Confirm the record is flushed to stage
+    TestUtils.assertWithRetry(
+        () ->
+            conn.listStage(
+                        stage,
+                        FileNameUtils.filePrefix(TestUtils.TEST_CONNECTOR_NAME, table, partition))
+                    .size()
+                == 1,
+        5,
+        4);
+    // call snowpipe ingest api
+    service.callAllGetOffset();
+    assert service.getOffset(new TopicPartition(topic, partition)) == offset + 1;
+
+    // Make sure correct client sequencer and offset token
+    ClientStatusResponse clientStatusResponse = ingestionService.getClientStatus();
+    assert clientStatusResponse.getClientSequencer() == 0;
+    assert clientStatusResponse.getOffsetToken() != null;
+    assert Long.parseLong(clientStatusResponse.getOffsetToken()) == offset;
+    service.closeAll();
+
+    // initialize a new sink service
+    SnowflakeSinkService service2 =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+    offset = 0;
+    // Create sink record with same offset
+    SinkRecord record2 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+    service2.insert(record2);
+    // The record should not be inserted in the buffer
+    Assert.assertTrue(
+        ((SnowflakeSinkServiceV1) service2)
+            .isPartitionBufferEmpty(SnowflakeSinkServiceV1.getNameIndex(topic, partition)));
+  }
+
+  @Test
+  // files write to FDB for an older clientSequencer should be discarded
+  public void testFileDiscardWithExactlyOnceSemantics() throws Exception {
+    conn.createTable(table);
+    conn.createStage(stage);
+    SnowflakeSinkService service =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setCustomJMXMetrics(false)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+
+    SnowflakeConverter converter = new SnowflakeJsonConverter();
+    SchemaAndValue input =
+        converter.toConnectData(topic, "{\"name\":\"test\"}".getBytes(StandardCharsets.UTF_8));
+
+    SnowflakeIngestionService ingestionService = conn.buildIngestService(stage, pipe);
+
+    long offset = 0;
+    // Create sink record
+    SinkRecord record1 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+
+    service.insert(record1);
+    // Confirm the record is flushed to stage
+    TestUtils.assertWithRetry(
+        () ->
+            conn.listStage(
+                        stage,
+                        FileNameUtils.filePrefix(TestUtils.TEST_CONNECTOR_NAME, table, partition))
+                    .size()
+                == 1,
+        5,
+        4);
+
+    // Make sure correct client sequencer
+    ClientStatusResponse clientStatusResponse = ingestionService.getClientStatus();
+    assert clientStatusResponse.getClientSequencer() == 0;
+    assert clientStatusResponse.getOffsetToken() == null;
+
+    // initialize a new sink service without closing the old service yet
+    SnowflakeSinkService service2 =
+        SnowflakeSinkServiceFactory.builder(conn)
+            .setRecordNumber(1)
+            .setDeliveryGuarantee(
+                SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee.EXACTLY_ONCE)
+            .addTask(table, new TopicPartition(topic, partition))
+            .build();
+    offset = 0;
+    // Create sink record with same offset
+    SinkRecord record2 =
+        new SinkRecord(
+            topic, partition, Schema.STRING_SCHEMA, "test", input.schema(), input.value(), offset);
+    // Should update the client sequencer
+    service2.insert(record2);
+    // call snowpipe ingest api on old service, should throw exception
+    assert TestUtils.assertError(
+        SnowflakeErrors.ERROR_3008,
+        () -> {
+          service.callAllGetOffset();
+        });
+    // call snowpipe ingest api on new service, should succeed
+    service2.callAllGetOffset();
+
+    // Make sure correct client sequencer and offset token
+    clientStatusResponse = ingestionService.getClientStatus();
+    assert clientStatusResponse.getClientSequencer() == 1;
+    assert clientStatusResponse.getOffsetToken() != null;
+    assert Long.parseLong(clientStatusResponse.getOffsetToken()) == offset;
+
+    service.closeAll();
+    service2.closeAll();
   }
 }

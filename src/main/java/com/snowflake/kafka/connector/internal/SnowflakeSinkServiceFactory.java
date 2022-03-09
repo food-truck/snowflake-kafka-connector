@@ -1,16 +1,36 @@
 package com.snowflake.kafka.connector.internal;
 
 import com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig;
+import com.snowflake.kafka.connector.dlq.KafkaRecordErrorReporter;
+import com.snowflake.kafka.connector.internal.streaming.IngestionMethodConfig;
+import com.snowflake.kafka.connector.internal.streaming.SnowflakeSinkServiceV2;
 import com.snowflake.kafka.connector.records.SnowflakeMetadataConfig;
 import java.util.Map;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.sink.SinkTaskContext;
 
 /** A factory to create {@link SnowflakeSinkService} */
 public class SnowflakeSinkServiceFactory {
   /**
-   * create service builder
+   * create service builder. To be used when Snowpipe streaming is the method of ingestion.
    *
    * @param conn snowflake connection service
+   * @param ingestionType ingestion Type based on config
+   * @param connectorConfig KC config map
    * @return a builder instance
+   */
+  public static SnowflakeSinkServiceBuilder builder(
+      SnowflakeConnectionService conn,
+      IngestionMethodConfig ingestionType,
+      Map<String, String> connectorConfig) {
+    return new SnowflakeSinkServiceBuilder(conn, ingestionType, connectorConfig);
+  }
+
+  /**
+   * Basic builder which internally uses SinkServiceV1 (Snowpipe)
+   *
+   * @param conn connection instance for connecting to snowflake
+   * @return A wrapper(Builder) having SinkService instance
    */
   public static SnowflakeSinkServiceBuilder builder(SnowflakeConnectionService conn) {
     return new SnowflakeSinkServiceBuilder(conn);
@@ -20,19 +40,38 @@ public class SnowflakeSinkServiceFactory {
   public static class SnowflakeSinkServiceBuilder extends Logging {
     private final SnowflakeSinkService service;
 
-    private SnowflakeSinkServiceBuilder(SnowflakeConnectionService conn) {
-      this.service = new SnowflakeSinkServiceV1(conn);
-      logInfo("{} created", this.getClass().getName());
+    private SnowflakeSinkServiceBuilder(
+        SnowflakeConnectionService conn,
+        IngestionMethodConfig ingestionType,
+        Map<String, String> connectorConfig) {
+      if (ingestionType == IngestionMethodConfig.SNOWPIPE) {
+        this.service = new SnowflakeSinkServiceV1(conn);
+      } else {
+        this.service = new SnowflakeSinkServiceV2(conn, connectorConfig);
+      }
+
+      logInfo("{} created", this.service.getClass().getName());
     }
 
-    public SnowflakeSinkServiceBuilder addTask(String tableName, String topic, int partition) {
-      this.service.startTask(tableName, topic, partition);
+    private SnowflakeSinkServiceBuilder(SnowflakeConnectionService conn) {
+      this(conn, IngestionMethodConfig.SNOWPIPE, null /* Not required for V1 */);
+    }
+
+    /**
+     * Add task for table and TopicPartition. Mostly used only for testing. When connector starts,
+     * startTask is directly called.
+     *
+     * @param tableName tableName in Snowflake
+     * @param topicPartition topicPartition containing topic and partition number
+     * @return Builder instance
+     */
+    public SnowflakeSinkServiceBuilder addTask(String tableName, TopicPartition topicPartition) {
+      this.service.startTask(tableName, topicPartition);
       logInfo(
-          "create new task in {} - table: {}, topic: {}, partition: {}",
+          "create new task in {} - table: {}, topicPartition: {}",
           SnowflakeSinkService.class.getName(),
           tableName,
-          topic,
-          partition);
+          topicPartition);
       return this;
     }
 
@@ -80,6 +119,30 @@ public class SnowflakeSinkServiceFactory {
     public SnowflakeSinkServiceBuilder setCustomJMXMetrics(final boolean enableJMX) {
       this.service.setCustomJMXMetrics(enableJMX);
       logInfo("Config JMX value {}. (true = Enabled, false = Disabled)", enableJMX);
+      return this;
+    }
+
+    public SnowflakeSinkServiceBuilder setDeliveryGuarantee(
+        SnowflakeSinkConnectorConfig.IngestionDeliveryGuarantee ingestionDeliveryGuarantee) {
+      this.service.setDeliveryGuarantee(ingestionDeliveryGuarantee);
+      logInfo("Config Delivery Guarantee type {}.", ingestionDeliveryGuarantee.toString());
+      return this;
+    }
+
+    public SnowflakeSinkServiceBuilder setErrorReporter(
+        KafkaRecordErrorReporter kafkaRecordErrorReporter) {
+      this.service.setErrorReporter(kafkaRecordErrorReporter);
+      return this;
+    }
+
+    /**
+     * Set SinkTaskContext for the respective SnowflakeSinkService instance at runtime.
+     *
+     * @param sinkTaskContext obtained from {@link org.apache.kafka.connect.sink.SinkTask}
+     * @return Builder
+     */
+    public SnowflakeSinkServiceBuilder setSinkTaskContext(SinkTaskContext sinkTaskContext) {
+      this.service.setSinkTaskContext(sinkTaskContext);
       return this;
     }
 

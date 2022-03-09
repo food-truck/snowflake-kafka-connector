@@ -17,11 +17,15 @@
 package com.snowflake.kafka.connector;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSet;
 import com.snowflake.kafka.connector.internal.Logging;
+import com.snowflake.kafka.connector.internal.streaming.IngestionMethodConfig;
+import com.snowflake.kafka.connector.internal.streaming.StreamingUtils;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
@@ -39,15 +43,15 @@ import org.slf4j.LoggerFactory;
 public class SnowflakeSinkConnectorConfig {
 
   static final String NAME = Utils.NAME;
-  static final String TOPICS = "topics";
+  public static final String TOPICS = "topics";
 
   public static final String WONDER_DEFAULT_TOPIC2TABLE_ENABLE = "__wonder_default_topic2table__";
 
   // Connector config
   private static final String CONNECTOR_CONFIG = "Connector Config";
-  static final String BUFFER_COUNT_RECORDS = "buffer.count.records";
+  public static final String BUFFER_COUNT_RECORDS = "buffer.count.records";
   public static final long BUFFER_COUNT_RECORDS_DEFAULT = 10000;
-  static final String BUFFER_SIZE_BYTES = "buffer.size.bytes";
+  public static final String BUFFER_SIZE_BYTES = "buffer.size.bytes";
   public static final long BUFFER_SIZE_BYTES_DEFAULT = 5000000;
   public static final long BUFFER_SIZE_BYTES_MIN = 1;
   static final String TOPICS_TABLES_MAP = "snowflake.topic2table.map";
@@ -58,7 +62,7 @@ public class SnowflakeSinkConnectorConfig {
   // Time in seconds
   public static final long BUFFER_FLUSH_TIME_SEC_MIN = 10;
   public static final long BUFFER_FLUSH_TIME_SEC_DEFAULT = 120;
-  static final String BUFFER_FLUSH_TIME_SEC = "buffer.flush.time";
+  public static final String BUFFER_FLUSH_TIME_SEC = "buffer.flush.time";
 
   // Snowflake connection and database config
   private static final String SNOWFLAKE_LOGIN_INFO = "Snowflake Login Info";
@@ -68,6 +72,9 @@ public class SnowflakeSinkConnectorConfig {
   static final String SNOWFLAKE_DATABASE = Utils.SF_DATABASE;
   static final String SNOWFLAKE_SCHEMA = Utils.SF_SCHEMA;
   static final String SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = Utils.PRIVATE_KEY_PASSPHRASE;
+
+  // For streaming ingest client
+  static final String SNOWFLAKE_ROLE = Utils.SF_ROLE;
 
   // Proxy Info
   private static final String PROXY_INFO = "Proxy Info";
@@ -95,9 +102,20 @@ public class SnowflakeSinkConnectorConfig {
   // By default it will be None since this is not enforced and only used for monitoring
   public static final String PROVIDER_CONFIG = "provider";
 
+  public static final String DELIVERY_GUARANTEE = "delivery.guarantee";
+
   // metrics
   public static final String JMX_OPT = "jmx";
   public static final boolean JMX_OPT_DEFAULT = true;
+
+  // for Snowpipe vs Streaming Snowpipe
+  public static final String INGESTION_METHOD_OPT = "snowflake.ingestion.method";
+  public static final String INGESTION_METHOD_DEFAULT_SNOWPIPE =
+      IngestionMethodConfig.SNOWPIPE.toString();
+
+  // TESTING
+  public static final String REBALANCING = "snowflake.test.rebalancing";
+  public static final boolean REBALANCING_DEFAULT = false;
 
   private static final Logger LOGGER =
       LoggerFactory.getLogger(SnowflakeSinkConnectorConfig.class.getName());
@@ -105,8 +123,56 @@ public class SnowflakeSinkConnectorConfig {
   private static final ConfigDef.Validator nonEmptyStringValidator = new ConfigDef.NonEmptyString();
   private static final ConfigDef.Validator topicToTableValidator = new TopicToTableValidator();
   private static final ConfigDef.Validator KAFKA_PROVIDER_VALIDATOR = new KafkaProviderValidator();
+  private static final ConfigDef.Validator DELIVERY_GUARANTEE_VALIDATOR =
+      new DeliveryGuaranteeValidator();
 
-  static void setDefaultValues(Map<String, String> config) {
+  // For error handling
+  public static final String ERROR_GROUP = "ERRORS";
+  public static final String ERRORS_TOLERANCE_CONFIG = "errors.tolerance";
+  public static final String ERRORS_TOLERANCE_DISPLAY = "Error Tolerance";
+  public static final String ERRORS_TOLERANCE_DEFAULT = ErrorTolerance.NONE.toString();
+  public static final String ERRORS_TOLERANCE_DOC =
+      "Behavior for tolerating errors during Sink connector's operation. 'NONE' is set as default"
+          + " and denotes that it will be fail fast. i.e any error will result in an immediate task"
+          + " failure. 'ALL'  skips over problematic records.";
+
+  public static final String ERRORS_LOG_ENABLE_CONFIG = "errors.log.enable";
+  public static final String ERRORS_LOG_ENABLE_DISPLAY = "Log Errors";
+  public static final boolean ERRORS_LOG_ENABLE_DEFAULT = false;
+  public static final String ERRORS_LOG_ENABLE_DOC =
+      "If true, write/log each error along with details of the failed operation and record"
+          + " properties to the Connect log. Default is 'false', so that only errors that are not"
+          + " tolerated are reported.";
+
+  public static final String ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_CONFIG =
+      "errors.deadletterqueue.topic.name";
+  public static final String ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DISPLAY =
+      "Send error records to the Dead Letter Queue (DLQ)";
+  public static final String ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DEFAULT = "";
+  public static final String ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DOC =
+      "Whether to output conversion errors to the dead letter queue "
+          + "By default messages are not sent to the dead letter queue. "
+          + "Requires property `errors.tolerance=all`.";
+
+  /**
+   * Used to serialize the incoming records to kafka connector. Note: Converter code is invoked
+   * before actually sending records to Kafka connector.
+   *
+   * @see <a
+   *     href="https://github.com/apache/kafka/blob/trunk/connect/runtime/src/main/java/org/apache/kafka/connect/runtime/WorkerSinkTask.java#L332">Kafka
+   *     Code for Converter</a>
+   */
+  public static final String KEY_CONVERTER_CONFIG_FIELD = "value.converter";
+
+  public static final String VALUE_CONVERTER_CONFIG_FIELD = "key.converter";
+
+  public static final Set<String> CUSTOM_SNOWFLAKE_CONVERTERS =
+      ImmutableSet.of(
+          "com.snowflake.kafka.connector.records.SnowflakeJsonConverter",
+          "com.snowflake.kafka.connector.records.SnowflakeAvroConverterWithoutSchemaRegistry",
+          "com.snowflake.kafka.connector.records.SnowflakeAvroConverter");
+
+  public static void setDefaultValues(Map<String, String> config) {
     setFieldToDefaultValues(config, BUFFER_COUNT_RECORDS, BUFFER_COUNT_RECORDS_DEFAULT);
 
     setFieldToDefaultValues(config, BUFFER_SIZE_BYTES, BUFFER_SIZE_BYTES_DEFAULT);
@@ -125,8 +191,8 @@ public class SnowflakeSinkConnectorConfig {
    * Get a property from the config map
    *
    * @param config connector configuration
-   * @param key name of the key to be retrived
-   * @return proprity value or null
+   * @param key name of the key to be retrieved
+   * @return property value or null
    */
   static String getProperty(final Map<String, String> config, final String key) {
     if (config.containsKey(key) && !config.get(key).isEmpty()) {
@@ -203,6 +269,17 @@ public class SnowflakeSinkConnectorConfig {
             5,
             ConfigDef.Width.NONE,
             SNOWFLAKE_SCHEMA)
+        .define(
+            SNOWFLAKE_ROLE,
+            Type.STRING,
+            null,
+            nonEmptyStringValidator,
+            Importance.LOW,
+            "Snowflake role: snowflake.role.name",
+            SNOWFLAKE_LOGIN_INFO,
+            6,
+            ConfigDef.Width.NONE,
+            SNOWFLAKE_ROLE)
         // proxy
         .define(
             JVM_PROXY_HOST,
@@ -251,7 +328,7 @@ public class SnowflakeSinkConnectorConfig {
             "",
             topicToTableValidator,
             Importance.LOW,
-            "Map of topics to tables (optional). Format : comma-seperated tuples, e.g."
+            "Map of topics to tables (optional). Format : comma-separated tuples, e.g."
                 + " <topic-1>:<table-1>,<topic-2>:<table-2>,... ",
             CONNECTOR_CONFIG,
             0,
@@ -285,7 +362,7 @@ public class SnowflakeSinkConnectorConfig {
             BUFFER_FLUSH_TIME_SEC,
             Type.LONG,
             BUFFER_FLUSH_TIME_SEC_DEFAULT,
-            ConfigDef.Range.atLeast(BUFFER_FLUSH_TIME_SEC_MIN),
+            ConfigDef.Range.atLeast(StreamingUtils.STREAMING_BUFFER_FLUSH_TIME_MINIMUM_SEC),
             Importance.LOW,
             "The time in seconds to flush cached data",
             CONNECTOR_CONFIG,
@@ -358,7 +435,64 @@ public class SnowflakeSinkConnectorConfig {
             ConfigDef.Type.BOOLEAN,
             JMX_OPT_DEFAULT,
             ConfigDef.Importance.HIGH,
-            "Whether to enable JMX MBeans for custom SF metrics");
+            "Whether to enable JMX MBeans for custom SF metrics")
+        .define(
+            DELIVERY_GUARANTEE,
+            Type.STRING,
+            IngestionDeliveryGuarantee.AT_LEAST_ONCE.name(),
+            DELIVERY_GUARANTEE_VALIDATOR,
+            Importance.LOW,
+            "Determines the ingest semantics for snowflake connector, currently support"
+                + " at-least-once and exactly-once delivery guarantees")
+        .define(
+            REBALANCING,
+            Type.BOOLEAN,
+            REBALANCING_DEFAULT,
+            Importance.LOW,
+            "Whether to trigger a rebalancing by exceeding the max poll interval (Used only in"
+                + " testing)")
+        .define(
+            INGESTION_METHOD_OPT,
+            Type.STRING,
+            INGESTION_METHOD_DEFAULT_SNOWPIPE,
+            IngestionMethodConfig.VALIDATOR,
+            Importance.LOW,
+            "Acceptable values for Ingestion: SNOWPIPE or Streaming ingest respectively",
+            CONNECTOR_CONFIG,
+            5,
+            ConfigDef.Width.NONE,
+            INGESTION_METHOD_OPT)
+        .define(
+            ERRORS_TOLERANCE_CONFIG,
+            Type.STRING,
+            ERRORS_TOLERANCE_DEFAULT,
+            ErrorTolerance.VALIDATOR,
+            Importance.LOW,
+            ERRORS_TOLERANCE_DOC,
+            ERROR_GROUP,
+            0,
+            ConfigDef.Width.NONE,
+            ERRORS_TOLERANCE_DISPLAY)
+        .define(
+            ERRORS_LOG_ENABLE_CONFIG,
+            Type.BOOLEAN,
+            ERRORS_LOG_ENABLE_DEFAULT,
+            Importance.LOW,
+            ERRORS_LOG_ENABLE_DOC,
+            ERROR_GROUP,
+            1,
+            ConfigDef.Width.NONE,
+            ERRORS_LOG_ENABLE_DISPLAY)
+        .define(
+            ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_CONFIG,
+            Type.STRING,
+            ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DEFAULT,
+            Importance.LOW,
+            ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DOC,
+            ERROR_GROUP,
+            2,
+            ConfigDef.Width.NONE,
+            ERRORS_DEAD_LETTER_QUEUE_TOPIC_NAME_DISPLAY);
   }
 
   public static class TopicToTableValidator implements ConfigDef.Validator {
@@ -376,7 +510,7 @@ public class SnowflakeSinkConnectorConfig {
     }
 
     public String toString() {
-      return "Topic to table map format : comma-seperated tuples, e.g."
+      return "Topic to table map format : comma-separated tuples, e.g."
           + " <topic-1>:<table-1>,<topic-2>:<table-2>,... ";
     }
   }
@@ -394,7 +528,6 @@ public class SnowflakeSinkConnectorConfig {
       // The value can be null or empty.
       try {
         KafkaProvider kafkaProvider = KafkaProvider.of(strValue);
-        LOGGER.debug("KafkaProvider value is:{}", kafkaProvider.name());
       } catch (final IllegalArgumentException e) {
         throw new ConfigException(PROVIDER_CONFIG, value, e.getMessage());
       }
@@ -404,6 +537,29 @@ public class SnowflakeSinkConnectorConfig {
       return "Whether kafka is running on Confluent code, self hosted or other managed service."
           + " Allowed values are:"
           + String.join(",", KafkaProvider.PROVIDER_NAMES);
+    }
+  }
+
+  /* Validator to validate Kafka delivery guarantee types    */
+  public static class DeliveryGuaranteeValidator implements ConfigDef.Validator {
+    public DeliveryGuaranteeValidator() {}
+
+    @Override
+    public void ensureValid(String name, Object value) {
+      assert value instanceof String;
+      final String strValue = (String) value;
+      // The value can be null or empty.
+      try {
+        IngestionDeliveryGuarantee ingestionDeliveryGuarantee =
+            IngestionDeliveryGuarantee.of(strValue);
+      } catch (final IllegalArgumentException e) {
+        throw new ConfigException(PROVIDER_CONFIG, value, e.getMessage());
+      }
+    }
+
+    public String toString() {
+      return "Allowed Delivery guarantee types:"
+          + String.join(",", IngestionDeliveryGuarantee.DELIVERY_GUARANTEE_TYPES);
     }
   }
 
@@ -493,4 +649,118 @@ public class SnowflakeSinkConnectorConfig {
       return name().toLowerCase(Locale.ROOT);
     }
   }
+
+  /**
+   * Enum which represents the type of delivery guarantees that the customer want (either
+   * at_least_once (default) or exactly_once
+   */
+  public enum IngestionDeliveryGuarantee {
+    /**
+     * At-least-once semantics means records received by Snowflake Connector are never lost but
+     * could be ingested multiple times
+     */
+    AT_LEAST_ONCE,
+    /**
+     * Exactly-once semantics means records received by Snowflake Connector are only ingested once
+     */
+    EXACTLY_ONCE,
+    ;
+
+    public static final List<String> DELIVERY_GUARANTEE_TYPES =
+        Arrays.stream(IngestionDeliveryGuarantee.values())
+            .map(deliveryGuarantee -> deliveryGuarantee.name().toLowerCase())
+            .collect(Collectors.toList());
+
+    public static IngestionDeliveryGuarantee of(final String deliveryGuaranteeType) {
+
+      if (Strings.isNullOrEmpty(deliveryGuaranteeType)) {
+        return AT_LEAST_ONCE;
+      }
+
+      for (final IngestionDeliveryGuarantee b : IngestionDeliveryGuarantee.values()) {
+        if (b.name().equalsIgnoreCase(deliveryGuaranteeType)) {
+          return b;
+        }
+      }
+      throw new IllegalArgumentException(
+          String.format(
+              "Unsupported Delivery Guarantee Type: %s. Supported are: %s",
+              deliveryGuaranteeType, String.join(",", DELIVERY_GUARANTEE_TYPES)));
+    }
+
+    @Override
+    public String toString() {
+      return name().toLowerCase(Locale.ROOT);
+    }
+  }
+
+  /* https://www.confluent.io/blog/kafka-connect-deep-dive-error-handling-dead-letter-queues/ */
+  public enum ErrorTolerance {
+
+    /** Tolerate no errors. */
+    NONE,
+
+    /** Tolerate all errors. */
+    ALL;
+
+    /**
+     * Validator to validate behavior.on.null.values which says whether kafka should keep null value
+     * records or ignore them while ingesting into snowflake table.
+     */
+    public static final ConfigDef.Validator VALIDATOR =
+        new ConfigDef.Validator() {
+          private final ConfigDef.ValidString validator =
+              ConfigDef.ValidString.in(ErrorTolerance.names());
+
+          @Override
+          public void ensureValid(String name, Object value) {
+            if (value instanceof String) {
+              value = ((String) value).toLowerCase(Locale.ROOT);
+            }
+            validator.ensureValid(name, value);
+          }
+
+          @Override
+          public String toString() {
+            return validator.toString();
+          }
+        };
+
+    /** All valid enum values */
+    public static String[] names() {
+      ErrorTolerance[] errorTolerances = values();
+      String[] result = new String[errorTolerances.length];
+
+      for (int i = 0; i < errorTolerances.length; i++) {
+        result[i] = errorTolerances[i].toString();
+      }
+
+      return result;
+    }
+
+    @Override
+    public String toString() {
+      return name().toLowerCase(Locale.ROOT);
+    }
+  }
+
+  /**
+   * Boolean Validator of passed booleans in configurations (TRUE or FALSE). This validator is case
+   * insensitive
+   */
+  public static final ConfigDef.Validator BOOLEAN_VALIDATOR =
+      new ConfigDef.Validator() {
+        private final ConfigDef.ValidString validator =
+            ConfigDef.ValidString.in(
+                Boolean.TRUE.toString().toLowerCase(Locale.ROOT),
+                Boolean.FALSE.toString().toLowerCase(Locale.ROOT));
+
+        @Override
+        public void ensureValid(String name, Object value) {
+          if (value instanceof String) {
+            value = ((String) value).toLowerCase(Locale.ROOT);
+          }
+          this.validator.ensureValid(name, value);
+        }
+      };
 }
