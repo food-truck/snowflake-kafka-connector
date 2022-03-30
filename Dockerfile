@@ -22,4 +22,4 @@ RUN curl -o /usr/share/java/confluent-common/confluent-log4j-extensions-7.0.1.ja
 
 COPY connect-log4j.properties /etc/confluent/docker/log4j.properties.template
 
-COPY target/*.jar /usr/share/wonder/ct-connect/
+COPY target/snowflake-kafka-connector-1.7.1.jar /usr/share/wonder/ct-connect/
