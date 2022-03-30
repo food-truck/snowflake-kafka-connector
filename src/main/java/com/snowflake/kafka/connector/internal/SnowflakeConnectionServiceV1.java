@@ -102,7 +102,7 @@ public class SnowflakeConnectionServiceV1 extends Logging implements SnowflakeCo
     if (overwrite) {
       query =
           "create or replace table identifier(?) (record_metadata "
-              + "variant, record_content variant)";
+              + "variant, record_content variant, __SF_TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP())";
     } else {
       query =
           "create table if not exists identifier(?) (record_metadata "
