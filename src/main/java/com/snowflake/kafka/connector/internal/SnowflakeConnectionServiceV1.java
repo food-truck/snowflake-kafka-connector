@@ -108,6 +108,7 @@ public class SnowflakeConnectionServiceV1 extends Logging implements SnowflakeCo
           "create table if not exists identifier(?) (record_metadata "
               + "variant, record_content variant, __SF_TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP())";
     }
+    logInfo(query);
     try {
       PreparedStatement stmt = conn.prepareStatement(query);
       stmt.setString(1, tableName);
