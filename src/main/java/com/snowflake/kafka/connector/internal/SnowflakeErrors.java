@@ -18,6 +18,7 @@
 package com.snowflake.kafka.connector.internal;
 
 import com.snowflake.kafka.connector.Utils;
+import com.snowflake.kafka.connector.internal.telemetry.SnowflakeTelemetryService;
 
 public enum SnowflakeErrors {
 
@@ -280,7 +281,7 @@ public enum SnowflakeErrors {
   public SnowflakeKafkaConnectorException getException(
       String msg, SnowflakeTelemetryService telemetryService) {
     if (telemetryService != null) {
-      telemetryService.reportKafkaFatalError(
+      telemetryService.reportKafkaConnectFatalError(
           getCode() + msg.substring(0, Math.min(msg.length(), 500)));
     }
 
