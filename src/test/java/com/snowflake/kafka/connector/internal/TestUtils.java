@@ -23,8 +23,12 @@ import com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig;
 import com.snowflake.kafka.connector.Utils;
 import com.snowflake.kafka.connector.records.SnowflakeJsonSchema;
 import com.snowflake.kafka.connector.records.SnowflakeRecordContent;
+import io.confluent.connect.avro.AvroConverter;
+import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -37,6 +41,10 @@ import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.JsonNode;
 import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaAndValue;
+import org.apache.kafka.connect.data.SchemaBuilder;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.sink.SinkRecord;
 
 public class TestUtils {
@@ -59,8 +67,6 @@ public class TestUtils {
   // profile path
   private static final String PROFILE_PATH = "profile.json";
 
-  private static final String PROFILE_PATH_STREAMING_INGEST = "profile_streaming_qa1.json";
-
   private static final ObjectMapper mapper = new ObjectMapper();
 
   private static Connection conn = null;
@@ -76,6 +82,33 @@ public class TestUtils {
   private static JsonNode profile = null;
 
   private static JsonNode profileForStreaming = null;
+
+  public static final String JSON_WITH_SCHEMA =
+      ""
+          + "{\n"
+          + "  \"schema\": {\n"
+          + "    \"type\": \"struct\",\n"
+          + "    \"fields\": [\n"
+          + "      {\n"
+          + "        \"type\": \"string\",\n"
+          + "        \"optional\": false,\n"
+          + "        \"field\": \"regionid\"\n"
+          + "      },\n"
+          + "      {\n"
+          + "        \"type\": \"string\",\n"
+          + "        \"optional\": false,\n"
+          + "        \"field\": \"gender\"\n"
+          + "      }\n"
+          + "    ],\n"
+          + "    \"optional\": false,\n"
+          + "    \"name\": \"sf.kc.test\"\n"
+          + "  },\n"
+          + "  \"payload\": {\n"
+          + "    \"regionid\": \"Region_5\",\n"
+          + "    \"gender\": \"FEMALE\"\n"
+          + "  }\n"
+          + "}";
+  public static final String JSON_WITHOUT_SCHEMA = "{\"userid\": \"User_1\"}";
 
   private static JsonNode getProfile(final String profileFilePath) {
     if (profileFilePath.equalsIgnoreCase(PROFILE_PATH)) {
@@ -115,11 +148,6 @@ public class TestUtils {
     // enable test query mark
     configuration.put(Utils.TASK_ID, "");
 
-    if (profileFileName.equalsIgnoreCase(PROFILE_PATH_STREAMING_INGEST)) {
-      configuration.put(Utils.SF_ROLE, getProfile(profileFileName).get(ROLE).asText());
-      configuration.put(Utils.TASK_ID, "0");
-    }
-
     return configuration;
   }
 
@@ -156,23 +184,6 @@ public class TestUtils {
     }
 
     return generateConnectionToSnowflake(PROFILE_PATH);
-  }
-
-  /**
-   * Create snowflake jdbc connection for streaming ingest.
-   *
-   * <p>Please note, snowflake streaming ingest is not yet available in prod accounts, hence we will
-   * have test against a test deployment.
-   *
-   * @return jdbc connection
-   * @throws Exception when error is met
-   */
-  private static Connection getConnectionForStreamingIngest() throws Exception {
-    if (connForStreamingIngestTests != null) {
-      return connForStreamingIngestTests;
-    }
-
-    return generateConnectionToSnowflake(PROFILE_PATH_STREAMING_INGEST);
   }
 
   /** Given a profile file path name, generate a connection by constructing a snowflake driver. */
@@ -214,7 +225,13 @@ public class TestUtils {
 
   /* Get configuration map from profile path. Used against prod deployment of Snowflake */
   public static Map<String, String> getConfForStreaming() {
-    return getConfFromFileName(PROFILE_PATH_STREAMING_INGEST);
+    Map<String, String> configuration = getConfFromFileName(PROFILE_PATH);
+
+    // On top of existing configurations, add
+    configuration.put(Utils.SF_ROLE, getProfile(PROFILE_PATH).get(ROLE).asText());
+    configuration.put(Utils.TASK_ID, "0");
+
+    return configuration;
   }
 
   /** @return JDBC config with encrypted private key */
@@ -248,17 +265,6 @@ public class TestUtils {
     }
   }
 
-  static ResultSet executeQueryForStreaming(String query) {
-    try {
-      Statement statement = getConnectionForStreamingIngest().createStatement();
-      return statement.executeQuery(query);
-    }
-    // if ANY exceptions occur, an illegal state has been reached
-    catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
-  }
-
   /**
    * drop a table
    *
@@ -270,28 +276,11 @@ public class TestUtils {
     executeQuery(query);
   }
 
-  /**
-   * drop a table
-   *
-   * @param tableName table name
-   */
-  public static void dropTableStreaming(String tableName) {
-    String query = "drop table if exists " + tableName;
-
-    executeQueryForStreaming(query);
-  }
-
   /** Select * from table */
-  static ResultSet showTable(String tableName) {
+  public static ResultSet showTable(String tableName) {
     String query = "select * from " + tableName;
 
     return executeQuery(query);
-  }
-
-  public static ResultSet showTableForStreaming(String tableName) {
-    String query = "select * from " + tableName;
-
-    return executeQueryForStreaming(query);
   }
 
   static String getDesRsaKey() {
@@ -365,13 +354,6 @@ public class TestUtils {
     return SnowflakeConnectionServiceFactory.builder().setProperties(getConf()).build();
   }
 
-  /* Get connection service instance which connects to test instance of snowflake which has streaming ingest enabled */
-  public static SnowflakeConnectionService getConnectionServiceForStreamingIngest() {
-    return SnowflakeConnectionServiceFactory.builder()
-        .setProperties(getConfFromFileName(PROFILE_PATH_STREAMING_INGEST))
-        .build();
-  }
-
   /**
    * @param configuration map of properties required to set while getting the connection
    * @return snowflake connection for given config map
@@ -409,18 +391,6 @@ public class TestUtils {
   public static int tableSize(String tableName) throws SQLException {
     String query = "show tables like '" + tableName + "'";
     ResultSet result = executeQuery(query);
-
-    if (result.next()) {
-      return result.getInt("rows");
-    }
-
-    return 0;
-  }
-
-  /* Get size of table (QA1 deployment) */
-  public static int getTableSizeStreaming(String tableName) throws SQLException {
-    String query = "show tables like '" + tableName + "'";
-    ResultSet result = executeQueryForStreaming(query);
 
     if (result.next()) {
       return result.getInt("rows");
@@ -523,6 +493,99 @@ public class TestUtils {
     return records;
   }
 
+  /* Generate (noOfRecords - startOffset) for a given topic and partition. */
+  public static List<SinkRecord> createNativeJsonSinkRecords(
+      final long startOffset,
+      final long noOfRecords,
+      final String topicName,
+      final int partitionNo) {
+    ArrayList<SinkRecord> records = new ArrayList<>();
+
+    JsonConverter converter = new JsonConverter();
+    HashMap<String, String> converterConfig = new HashMap<>();
+    converterConfig.put("schemas.enable", "true");
+    converter.configure(converterConfig, false);
+    SchemaAndValue schemaInputValue =
+        converter.toConnectData(
+            "test", TestUtils.JSON_WITH_SCHEMA.getBytes(StandardCharsets.UTF_8));
+
+    for (long i = startOffset; i < startOffset + noOfRecords; ++i) {
+      records.add(
+          new SinkRecord(
+              topicName,
+              partitionNo,
+              Schema.STRING_SCHEMA,
+              "test",
+              schemaInputValue.schema(),
+              schemaInputValue.value(),
+              i));
+    }
+    return records;
+  }
+
+  /* Generate (noOfRecords - startOffset) for a given topic and partition which were essentially avro records */
+  public static List<SinkRecord> createBigAvroRecords(
+      final long startOffset,
+      final long noOfRecords,
+      final String topicName,
+      final int partitionNo) {
+    ArrayList<SinkRecord> records = new ArrayList<>();
+
+    final int outerSegmentLength = 10;
+    final int innerSegmentLength = 10;
+    List<Schema> outerSchemas = new ArrayList<>(outerSegmentLength);
+    for (int outerSegment = 0; outerSegment < outerSegmentLength; outerSegment++) {
+      SchemaBuilder outerSegmentSchema = SchemaBuilder.struct().name("segment" + outerSegment);
+      for (int innerSegment = 0; innerSegment < innerSegmentLength; innerSegment++) {
+        outerSegmentSchema.field(
+            "segment_" + outerSegment + "_" + innerSegment, Schema.STRING_SCHEMA);
+      }
+      outerSchemas.add(outerSegmentSchema.build());
+    }
+
+    List<Struct> items = new ArrayList<>(outerSegmentLength);
+    for (int outerSegment = 0; outerSegment < outerSegmentLength; outerSegment++) {
+      Struct outerItem = new Struct(outerSchemas.get(outerSegment));
+      for (int innerSegment = 0; innerSegment < innerSegmentLength; innerSegment++) {
+        outerItem.put(
+            "segment_" + outerSegment + "_" + innerSegment,
+            "segment_" + outerSegment + "_" + innerSegment);
+      }
+      items.add(outerItem);
+    }
+
+    SchemaBuilder schemaBuilderBigAvroSegment = SchemaBuilder.struct().name("biggestAvro");
+    outerSchemas.forEach(schema -> schemaBuilderBigAvroSegment.field(schema.name(), schema));
+
+    Struct originalBASegment = new Struct(schemaBuilderBigAvroSegment.build());
+
+    for (int i = 0; i < outerSchemas.size(); i++) {
+      originalBASegment.put(outerSchemas.get(i).name(), items.get(i));
+    }
+
+    SchemaRegistryClient schemaRegistry = new MockSchemaRegistryClient();
+    AvroConverter avroConverter = new AvroConverter(schemaRegistry);
+    avroConverter.configure(
+        Collections.singletonMap("schema.registry.url", "http://fake-url"), false);
+    byte[] converted =
+        avroConverter.fromConnectData(
+            topicName, schemaBuilderBigAvroSegment.schema(), originalBASegment);
+    SchemaAndValue avroInputValue = avroConverter.toConnectData(topicName, converted);
+
+    for (long i = startOffset; i < startOffset + noOfRecords; ++i) {
+      records.add(
+          new SinkRecord(
+              topicName,
+              partitionNo,
+              Schema.STRING_SCHEMA,
+              "key" + i,
+              avroInputValue.schema(),
+              avroInputValue.value(),
+              i));
+    }
+    return records;
+  }
+
   public static Map<String, String> getConfig() {
     Map<String, String> config = new HashMap<>();
     config.put(Utils.NAME, "test");
@@ -554,9 +617,9 @@ public class TestUtils {
   public static long getClientSequencerForChannelAndTable(
       String tableName, final String channelName) throws SQLException {
     String query = "show channels in table " + tableName;
-    ResultSet result = executeQueryForStreaming(query);
+    ResultSet result = executeQuery(query);
 
-    if (result.next()) {
+    while (result.next()) {
       if (result.getString("name").equalsIgnoreCase(channelName)) {
         return result.getInt("client_sequencer");
       }
@@ -573,11 +636,11 @@ public class TestUtils {
   public static long getOffsetTokenForChannelAndTable(String tableName, final String channelName)
       throws SQLException {
     String query = "show channels in table " + tableName;
-    ResultSet result = executeQueryForStreaming(query);
+    ResultSet result = executeQuery(query);
 
-    if (result.next()) {
+    while (result.next()) {
       if (result.getString("name").equalsIgnoreCase(channelName)) {
-        return result.getInt("client_sequencer");
+        return result.getInt("offset_token");
       }
     }
     return -1;

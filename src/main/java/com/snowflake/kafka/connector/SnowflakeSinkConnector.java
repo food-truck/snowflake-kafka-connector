@@ -17,6 +17,7 @@
 package com.snowflake.kafka.connector;
 
 import com.snowflake.kafka.connector.internal.*;
+import com.snowflake.kafka.connector.internal.telemetry.SnowflakeTelemetryService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -97,12 +98,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
 
     telemetryClient = conn.getTelemetryClient();
 
-    // maxTasks value isn't visible if the user leaves it at default. So 0
-    // means unknown.
-    int maxTasks =
-        (config.containsKey("tasks.max")) ? Integer.parseInt(config.get("tasks.max")) : 0;
-
-    telemetryClient.reportKafkaStart(connectorStartTime, maxTasks);
+    telemetryClient.reportKafkaConnectStart(connectorStartTime, this.config);
 
     setupComplete = true;
   }
@@ -119,7 +115,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
   public void stop() {
     setupComplete = false;
     LOGGER.info(Logging.logMessage("SnowflakeSinkConnector:stop"));
-    telemetryClient.reportKafkaStop(connectorStartTime);
+    telemetryClient.reportKafkaConnectStop(connectorStartTime);
   }
 
   // TODO (post GA): override reconfigure(java.util.Map<java.lang.String,java
