@@ -21,5 +21,5 @@ RUN curl -o /usr/share/java/confluent-common/common-logging-7.0.1.jar -SL https:
 RUN curl -o /usr/share/java/confluent-common/confluent-log4j-extensions-7.0.1.jar -SL https://packages.confluent.io/maven/io/confluent/confluent-log4j-extensions/7.0.1/confluent-log4j-extensions-7.0.1.jar
 
 COPY connect-log4j.properties /etc/confluent/docker/log4j.properties.template
+COPY target/*.jar /usr/share/wonder/ct-connect/
 
-COPY target/snowflake-kafka-connector-1.7.1.jar /usr/share/wonder/ct-connect/
