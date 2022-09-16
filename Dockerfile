@@ -22,4 +22,3 @@ RUN curl -o /usr/share/java/confluent-common/confluent-log4j-extensions-7.0.1.ja
 
 COPY connect-log4j.properties /etc/confluent/docker/log4j.properties.template
 COPY target/*.jar /usr/share/wonder/ct-connect/
-
